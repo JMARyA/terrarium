@@ -7,6 +7,12 @@
     crane.url = "github:ipetkov/crane";
 
     flake-utils.url = "github:numtide/flake-utils";
+
+    # Add rust-overlay for easy nightly access
+    rust-overlay = {
+      url = "github:oxalica/rust-overlay";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
   };
 
   outputs =
@@ -15,13 +21,27 @@
       nixpkgs,
       crane,
       flake-utils,
+      rust-overlay,
       ...
     }@inputs:
     flake-utils.lib.eachDefaultSystem (
       system:
       let
-        pkgs = nixpkgs.legacyPackages.${system};
-        craneLib = crane.mkLib pkgs;
+        pkgs = import nixpkgs {
+          inherit system;
+          overlays = [ rust-overlay.overlays.default ];
+        };
+
+        # Create a custom Rust toolchain with nightly
+        rustToolchain = pkgs.rust-bin.nightly.latest.default.override {
+          extensions = [
+            "rust-src"
+            "rust-analyzer"
+          ];
+        };
+
+        # Override craneLib to use the nightly toolchain
+        craneLib = (crane.mkLib pkgs).overrideToolchain rustToolchain;
 
         commonArgs = {
           src = craneLib.cleanCargoSource ./.;
@@ -47,7 +67,6 @@
           commonArgs
           // {
             cargoArtifacts = craneLib.buildDepsOnly commonArgs;
-
           }
         );
 
@@ -58,7 +77,10 @@
             terrarium
           ];
           config = {
-            Cmd = [ "/bin/terrarium" "serve" ];
+            Cmd = [
+              "/bin/terrarium"
+              "serve"
+            ];
             WorkingDir = "/app";
           };
 
@@ -90,8 +112,7 @@
         devShells.default = craneLib.devShell {
           checks = self.checks.${system};
 
-          packages = [
-          ];
+          packages = [ ];
         };
       }
     );
