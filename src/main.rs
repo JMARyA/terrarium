@@ -1,3 +1,6 @@
+use std::io::Write;
+
+use authur::Roles;
 use axum::{
     Router,
     routing::{delete, get, post},
@@ -5,6 +8,7 @@ use axum::{
 
 use crate::{lock::LockContainer, state::StateContainer};
 
+mod cli;
 pub mod lock;
 pub mod state;
 
@@ -25,6 +29,53 @@ impl axum::extract::FromRef<AppState> for authur::UserDB<authur::vfs::PhysicalFS
 async fn main() {
     tracing_subscriber::fmt::init();
 
+    let cli: cli::Cli = argh::from_env();
+
+    match cli.subcommand {
+        cli::SubCommand::Serve(_) => serve().await,
+        cli::SubCommand::User(user_command) => {
+            let users = authur::UserDB::new("./users").await;
+
+            match user_command.subcommand {
+                cli::UserCommands::Add(args) => {
+                    let pass = args.password.unwrap_or_else(|| readline("Password: "));
+                    users
+                        .create(args.username, &pass, Roles::default())
+                        .await
+                        .unwrap();
+                }
+                cli::UserCommands::ChangePassword(args) => {
+                    if let Some(_user) = users.find(&args.username).await {
+                        todo!()
+                    } else {
+                        println!("Error: unknown user");
+                    }
+                }
+                cli::UserCommands::Delete(_args) => {
+                    todo!()
+                }
+                cli::UserCommands::List(_) => {
+                    let users = users.find_all().await;
+                    println!("Users:");
+                    for u in users {
+                        println!("- {u}");
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn readline(prompt: &str) -> String {
+    print!("{}", prompt);
+    std::io::stdout().flush().unwrap();
+
+    let mut input = String::new();
+    std::io::stdin().read_line(&mut input).unwrap();
+    input.trim_end().to_string()
+}
+
+async fn serve() {
     let state = AppState {
         state: StateContainer::new("./state".into()),
         locks: LockContainer::new("./locks".into()),

@@ -50,3 +50,10 @@ terraform {
 
 You can provide auth credentials via the environment variables `$TF_HTTP_USERNAME` & `$TF_HTTP_PASSWORD`.
 After that you need to reinit with `tofu init`. It will ask you to migrate any local state to the new backend.
+
+## User Management
+Only authenticated users can interact with the terraform state files. To create a user, you can use the CLI:
+
+```shell
+terrarium user add <username>
+```
