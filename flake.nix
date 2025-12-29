@@ -85,10 +85,8 @@
           };
 
           fakeRootCommands = ''
-            mkdir -p /usr
-            mkdir -p /tmp
+            mkdir -p /usr /usr/bin /etc /tmp /root
             ln -s /bin /usr/bin
-            mkdir -p /root
             chmod 700 /root
             echo "root:x:0:0:root:/root:/bin/sh" > /etc/passwd
             echo "root:x:0:" > /etc/group
