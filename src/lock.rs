@@ -7,7 +7,7 @@ use axum::{
 };
 use dashmap::DashMap;
 use serde::{Deserialize, Serialize};
-use std::path::PathBuf;
+use std::{path::PathBuf, sync::Arc};
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 #[allow(non_snake_case)]
@@ -20,10 +20,18 @@ pub struct LockInfo {
     pub Created: Option<String>,
 }
 
-#[derive(Clone)]
 pub struct LockContainer {
-    pub locks: DashMap<String, LockInfo>,
+    pub locks: Arc<DashMap<String, LockInfo>>,
     pub persisted: PathBuf,
+}
+
+impl Clone for LockContainer {
+    fn clone(&self) -> Self {
+        Self {
+            locks: Arc::clone(&self.locks),
+            persisted: self.persisted.clone(),
+        }
+    }
 }
 
 impl LockContainer {
@@ -32,7 +40,7 @@ impl LockContainer {
             std::fs::create_dir_all(&dir).unwrap();
         }
         Self {
-            locks: DashMap::new(),
+            locks: Arc::new(DashMap::new()),
             persisted: dir,
         }
     }
