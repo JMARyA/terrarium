@@ -40,9 +40,9 @@ impl StateContainer {
 /// Get the current terraform state
 /// State will be fetched via GET by Terraform.
 pub async fn get_state(
-    _auth: BasicAuthUser,
     State(app): State<AppState>,
     Path(name): Path<String>,
+    _auth: BasicAuthUser,
 ) -> Result<Bytes, StatusCode> {
     tracing::info!("🔖 Getting state for {name}");
 
@@ -62,10 +62,10 @@ pub struct LockQuery {
 
 /// Update terraform state via POST
 pub async fn put_state(
-    _auth: BasicAuthUser,
     State(app): State<AppState>,
     Path(name): Path<String>,
     Query(lock): Query<LockQuery>,
+    _auth: BasicAuthUser,
     body: Bytes,
 ) -> Result<StatusCode, StatusCode> {
     tracing::info!("✍️ Trying to update state for {name}");
@@ -84,10 +84,10 @@ pub async fn put_state(
 
 /// Delete terraform state via DELETE
 pub async fn delete_state(
-    _auth: BasicAuthUser,
     State(app): State<AppState>,
     Path(name): Path<String>,
     Query(lock): Query<LockQuery>,
+    _auth: BasicAuthUser,
 ) -> Result<StatusCode, StatusCode> {
     tracing::info!("♻️ Trying to delete state for {name}");
 

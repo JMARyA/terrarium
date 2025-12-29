@@ -84,13 +84,13 @@ async fn serve() {
 
     let app = Router::new()
         .route(
-            "/state/:name",
+            "/state/{name}",
             get(state::get_state)
                 .post(state::put_state)
                 .delete(state::delete_state),
         )
-        .route("/lock/:name", post(lock::lock))
-        .route("/lock/:name", delete(lock::unlock))
+        .route("/lock/{name}", post(lock::lock))
+        .route("/lock/{name}", delete(lock::unlock))
         .with_state(state);
 
     let listener = tokio::net::TcpListener::bind("0.0.0.0:8080")
