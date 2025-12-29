@@ -81,7 +81,7 @@
               "/bin/terrarium"
               "serve"
             ];
-            WorkingDir = "/app";
+            WorkingDir = "/";
           };
 
           fakeRootCommands = ''
