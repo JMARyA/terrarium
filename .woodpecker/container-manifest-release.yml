@@ -1,0 +1,25 @@
+when:
+  - event: tag
+    ref: refs/tags/v*
+depends_on:
+    - container-release
+skip_clone: true
+
+steps:
+  merge-manifest:
+    image: quay.io/buildah/stable
+    privileged: true
+    environment:
+      REGISTRY_URL: git.hydrar.de
+      REGISTRY_USER: jmarya
+      REGISTRY_PASS:
+        from_secret: registry_token
+      IMAGE_NAME: terrarium
+      BASE_TAG: "$CI_COMMIT_TAG"
+    commands:
+      - buildah login -u "$REGISTRY_USER" -p "$REGISTRY_PASS" "$REGISTRY_URL"
+      - export IMAGE_BASE="$REGISTRY_URL/$REGISTRY_USER/$IMAGE_NAME"
+      - buildah manifest create "$IMAGE_BASE:$BASE_TAG"
+      - buildah manifest add "$IMAGE_BASE:$BASE_TAG" "docker://$IMAGE_BASE:$BASE_TAG-amd64"
+      - buildah manifest add "$IMAGE_BASE:$BASE_TAG" "docker://$IMAGE_BASE:$BASE_TAG-arm64"
+      - buildah manifest push --all "$IMAGE_BASE:$BASE_TAG" "docker://$IMAGE_BASE:$BASE_TAG"

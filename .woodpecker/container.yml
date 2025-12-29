@@ -1,0 +1,26 @@
+matrix:
+  platform:
+    - linux/amd64
+    - linux/arm64
+
+labels:
+  platform: ${platform}
+
+when:
+  - event: push
+    branch: main
+
+steps:
+  - name: "Build & Push Container"
+    image: git.hydrar.de/hydra/nix-build:latest
+    settings:
+      BINARY_CACHE_URL: https://attic.hydrar.de
+      BINARY_CACHE_NAME: jmarya
+      BINARY_CACHE_TOKEN:
+        from_secret: binary_cache_access_token
+      PACKAGE: containerImage
+      IS_CONTAINER: true
+      REGISTRY_URL: git.hydrar.de
+      REGISTRY_USER: jmarya
+      REGISTRY_PASS:
+        from_secret: registry_token
