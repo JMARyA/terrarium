@@ -1,0 +1,12 @@
+services:
+  terrarium:
+    image: git.hydrar.de/jmarya/terrarium:latest
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./locks:/locks
+      - ./users:/users
+      - ./state:/state
+    environment:
+      - "RUST_LOG=info"
+    command: "/bin/terrarium serve"

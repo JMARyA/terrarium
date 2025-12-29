@@ -58,7 +58,7 @@
             terrarium
           ];
           config = {
-            Cmd = [ "/bin/terrarium" ];
+            Cmd = [ "/bin/terrarium" "serve" ];
             WorkingDir = "/app";
           };
 
