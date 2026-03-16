@@ -28,9 +28,9 @@ checksum = "5f0e0fee31ef5ed1ba1316088939cea399010ed7731dba877ed44aeb407a75ea"
 
 [[package]]
 name = "argh"
-version = "0.1.15"
+version = "0.1.19"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d32c2462e89541e6687e684d97310015d64a0627b61106fc472156a38f61cd1e"
+checksum = "211818e820cda9ca6f167a64a5c808837366a6dfd807157c64c1304c486cd033"
 dependencies = [
  "argh_derive",
  "argh_shared",
@@ -38,9 +38,9 @@ dependencies = [
 
 [[package]]
 name = "argh_derive"
-version = "0.1.15"
+version = "0.1.19"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ccc2a031b364bd099fed016feb1ccfca2c3549d63c16f330cfc40b27b7692231"
+checksum = "c442a9d18cef5dde467405d27d461d080d68972d6d0dfd0408265b6749ec427d"
 dependencies = [
  "argh_shared",
  "proc-macro2",
@@ -50,9 +50,9 @@ dependencies = [
 
 [[package]]
 name = "argh_shared"
-version = "0.1.15"
+version = "0.1.19"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5b9abea17ef74821d1d3490aee9e0749d731445d965b7512308b2aa00c90079e"
+checksum = "e5ade012bac4db278517a0132c8c10c6427025868dca16c801087c28d5a411f1"
 dependencies = [
  "serde",
 ]
