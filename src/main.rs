@@ -134,6 +134,33 @@ async fn main() {
                             Err(e) => die(e),
                         }
                     }
+                    cli::RemoteStateSubCommand::Diff(args) => {
+                        let from = match client.get_state(&args.name, Some(args.from)).await {
+                            Ok(d) => d,
+                            Err(e) => die(e),
+                        };
+                        let to = match client.get_state(&args.name, Some(args.to)).await {
+                            Ok(d) => d,
+                            Err(e) => die(e),
+                        };
+
+                        let parse = |raw: &bytes::Bytes| -> Result<facet_value::Value, String> {
+                            let s = String::from_utf8_lossy(raw);
+                            facet_json::from_str(&s).map_err(|e| e.to_string())
+                        };
+
+                        let a = match parse(&from) {
+                            Ok(v) => v,
+                            Err(e) => die(format!("v{} is not valid JSON: {e}", args.from)),
+                        };
+                        let b = match parse(&to) {
+                            Ok(v) => v,
+                            Err(e) => die(format!("v{} is not valid JSON: {e}", args.to)),
+                        };
+
+                        use facet_diff::FacetDiff;
+                        println!("{}", a.diff(&b));
+                    }
                     cli::RemoteStateSubCommand::Unlock(args) => {
                         match client.unlock_state(&args.name).await {
                             Ok(info) => {
@@ -193,7 +220,7 @@ pub(crate) fn readline(prompt: &str) -> String {
     input.trim_end().to_string()
 }
 
-fn die(msg: String) {
+fn die(msg: String) -> ! {
     eprintln!("Error: {msg}");
     std::process::exit(1);
 }

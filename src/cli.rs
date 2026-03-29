@@ -117,6 +117,7 @@ pub enum RemoteStateSubCommand {
     List(RemoteStateList),
     Get(RemoteStateGet),
     Versions(RemoteStateVersions),
+    Diff(RemoteStateDiff),
     Unlock(RemoteStateUnlock),
     Archive(RemoteStateArchive),
 }
@@ -154,6 +155,23 @@ pub struct RemoteStateVersions {
     /// state name
     #[argh(positional)]
     pub name: String,
+}
+
+#[derive(FromArgs)]
+/// Diff two versions of a state
+#[argh(subcommand, name = "diff")]
+pub struct RemoteStateDiff {
+    /// state name
+    #[argh(positional)]
+    pub name: String,
+
+    /// from version number
+    #[argh(positional)]
+    pub from: u32,
+
+    /// to version number
+    #[argh(positional)]
+    pub to: u32,
 }
 
 #[derive(FromArgs)]
