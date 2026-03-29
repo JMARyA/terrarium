@@ -6,7 +6,7 @@ use axum::{
     routing::{get, post, put},
 };
 
-use crate::{lock::LockContainer, state::StateContainer};
+use crate::{lock::LockContainer, state::StateContainer, webhook::WebhookStore};
 
 mod cli;
 mod client;
@@ -14,12 +14,14 @@ mod config;
 pub mod lock;
 pub mod state;
 pub mod user;
+pub mod webhook;
 
 #[derive(Clone)]
 pub struct AppState {
     state: state::StateContainer,
     locks: lock::LockContainer,
     users: authur::UserDB<authur::vfs::PhysicalFS>,
+    webhooks: webhook::WebhookStore,
 }
 
 impl axum::extract::FromRef<AppState> for authur::UserDB<authur::vfs::PhysicalFS> {
@@ -198,6 +200,47 @@ async fn main() {
                     }
                 },
 
+                cli::RemoteSubCommand::Webhook(webhook_cmd) => match webhook_cmd.subcommand {
+                    cli::RemoteWebhookSubCommand::Add(args) => {
+                        let events = args
+                            .events
+                            .unwrap_or_default()
+                            .split(',')
+                            .filter(|s| !s.is_empty())
+                            .map(str::to_string)
+                            .collect();
+                        match client.add_webhook(&args.workspace, &args.url, events).await {
+                            Ok(hook) => println!("Webhook registered (ID: {})", hook.id),
+                            Err(e) => die(e),
+                        }
+                    }
+                    cli::RemoteWebhookSubCommand::List(args) => {
+                        match client.list_webhooks(&args.workspace).await {
+                            Ok(hooks) if hooks.is_empty() => {
+                                println!("No webhooks for '{}'", args.workspace)
+                            }
+                            Ok(hooks) => {
+                                println!("Webhooks for '{}':", args.workspace);
+                                for h in hooks {
+                                    let events = if h.events.is_empty() {
+                                        "all events".to_string()
+                                    } else {
+                                        h.events.join(", ")
+                                    };
+                                    println!("  {} → {} ({})", h.id, h.url, events);
+                                }
+                            }
+                            Err(e) => die(e),
+                        }
+                    }
+                    cli::RemoteWebhookSubCommand::Remove(args) => {
+                        match client.remove_webhook(&args.id).await {
+                            Ok(()) => println!("Webhook '{}' removed", args.id),
+                            Err(e) => die(e),
+                        }
+                    }
+                },
+
                 cli::RemoteSubCommand::User(user_cmd) => match user_cmd.subcommand {
                     cli::RemoteUserSubCommand::Passwd(args) => {
                         let new_pass = args.password.unwrap_or_else(|| readline("New password: "));
@@ -230,6 +273,7 @@ async fn serve() {
         state: StateContainer::new("./state".into(), "./versions".into()),
         locks: LockContainer::new("./locks".into()),
         users: authur::UserDB::new("./users").await,
+        webhooks: WebhookStore::new("./webhooks.json".into()),
     };
 
     let app = Router::new()
@@ -245,6 +289,11 @@ async fn serve() {
         .route("/lock", get(lock::list_locks))
         .route("/lock/{*name}", post(lock::lock).delete(lock::unlock))
         .route("/user/password", put(user::change_own_password))
+        .route(
+            "/webhooks/{*workspace}",
+            get(webhook::list_webhooks).post(webhook::add_webhook),
+        )
+        .route("/webhooks/id/{id}", axum::routing::delete(webhook::remove_webhook))
         .with_state(state);
 
     let listener = tokio::net::TcpListener::bind("0.0.0.0:8080")

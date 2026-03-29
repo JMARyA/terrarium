@@ -100,7 +100,7 @@ fn validate_name(name: &str) -> Result<(), StatusCode> {
 
 /// Create a lock on state
 pub async fn lock(
-    _auth: BasicAuthUser,
+    _auth: BasicAuthUser, // used below for webhook username
     State(app): State<AppState>,
     Path(name): Path<String>,
     Json(info): Json<LockInfo>,
@@ -122,12 +122,13 @@ pub async fn lock(
 
     tracing::info!("🔒 Acquired lock for {name}: {info:#?}");
     locks.insert(&name, info.clone());
+    app.webhooks.fire("lock.acquire", &name, None, _auth.0.username.as_str()).await;
     Ok(Json(info))
 }
 
 /// Unlock a state
 pub async fn unlock(
-    _auth: BasicAuthUser,
+    BasicAuthUser(user): BasicAuthUser,
     State(app): State<AppState>,
     Path(name): Path<String>,
 ) -> Result<Json<LockInfo>, StatusCode> {
@@ -137,6 +138,7 @@ pub async fn unlock(
 
     if let Some(info) = locks.remove(&name) {
         tracing::info!("🔓 Unlocked {name}");
+        app.webhooks.fire("lock.release", &name, None, &user.username).await;
         Ok(Json(info))
     } else {
         Err(StatusCode::NOT_FOUND)

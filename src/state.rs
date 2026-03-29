@@ -177,11 +177,12 @@ pub async fn list_versions(
 pub async fn archive_state(
     State(app): State<AppState>,
     Path(name): Path<String>,
-    _auth: BasicAuthUser,
+    BasicAuthUser(user): BasicAuthUser,
 ) -> Result<StatusCode, StatusCode> {
     validate_name(&name)?;
     tracing::info!("📦 Archiving state {name}");
     if app.state.archive(&name) {
+        app.webhooks.fire("state.archive", &name, None, &user.username).await;
         Ok(StatusCode::OK)
     } else {
         Err(StatusCode::NOT_FOUND)
@@ -209,7 +210,7 @@ pub async fn put_state(
     State(app): State<AppState>,
     Path(name): Path<String>,
     Query(lock): Query<LockQuery>,
-    _auth: BasicAuthUser,
+    BasicAuthUser(user): BasicAuthUser,
     body: Bytes,
 ) -> Result<StatusCode, StatusCode> {
     validate_name(&name)?;
@@ -227,6 +228,8 @@ pub async fn put_state(
     }
 
     app.state.insert(&name, body.to_vec());
+    let version = app.state.list_versions(&name).last().copied();
+    app.webhooks.fire("state.push", &name, version, &user.username).await;
     Ok(StatusCode::OK)
 }
 
@@ -235,7 +238,7 @@ pub async fn delete_state(
     State(app): State<AppState>,
     Path(name): Path<String>,
     Query(lock): Query<LockQuery>,
-    _auth: BasicAuthUser,
+    BasicAuthUser(user): BasicAuthUser,
 ) -> Result<StatusCode, StatusCode> {
     validate_name(&name)?;
     tracing::info!("♻️ Trying to delete state for {name}");
@@ -247,5 +250,6 @@ pub async fn delete_state(
     }
 
     app.state.remove(&name);
+    app.webhooks.fire("state.delete", &name, None, &user.username).await;
     Ok(StatusCode::OK)
 }

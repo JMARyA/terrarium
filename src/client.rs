@@ -3,6 +3,7 @@ use std::collections::HashMap;
 use reqwest::Client;
 
 use crate::lock::LockInfo;
+use crate::webhook::Webhook;
 
 pub struct TerrariumClient {
     client: Client,
@@ -124,6 +125,61 @@ impl TerrariumClient {
                 .map_err(|e| e.to_string())
         } else {
             Err(format!("Server returned {}", resp.status()))
+        }
+    }
+
+    pub async fn add_webhook(
+        &self,
+        workspace: &str,
+        url: &str,
+        events: Vec<String>,
+    ) -> Result<Webhook, String> {
+        let body = serde_json::json!({ "url": url, "events": events });
+        let resp = self
+            .client
+            .post(format!("{}/webhooks/{workspace}", self.base_url))
+            .basic_auth(&self.username, Some(&self.password))
+            .json(&body)
+            .send()
+            .await
+            .map_err(|e| e.to_string())?;
+
+        if resp.status().is_success() {
+            resp.json::<Webhook>().await.map_err(|e| e.to_string())
+        } else {
+            Err(format!("Server returned {}", resp.status()))
+        }
+    }
+
+    pub async fn list_webhooks(&self, workspace: &str) -> Result<Vec<Webhook>, String> {
+        let resp = self
+            .client
+            .get(format!("{}/webhooks/{workspace}", self.base_url))
+            .basic_auth(&self.username, Some(&self.password))
+            .send()
+            .await
+            .map_err(|e| e.to_string())?;
+
+        if resp.status().is_success() {
+            resp.json::<Vec<Webhook>>().await.map_err(|e| e.to_string())
+        } else {
+            Err(format!("Server returned {}", resp.status()))
+        }
+    }
+
+    pub async fn remove_webhook(&self, id: &str) -> Result<(), String> {
+        let resp = self
+            .client
+            .delete(format!("{}/webhooks/id/{id}", self.base_url))
+            .basic_auth(&self.username, Some(&self.password))
+            .send()
+            .await
+            .map_err(|e| e.to_string())?;
+
+        match resp.status() {
+            s if s.is_success() => Ok(()),
+            reqwest::StatusCode::NOT_FOUND => Err(format!("Webhook '{id}' not found")),
+            s => Err(format!("Server returned {s}")),
         }
     }
 

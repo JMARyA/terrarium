@@ -99,6 +99,7 @@ pub enum RemoteSubCommand {
     State(RemoteStateCommand),
     Lock(RemoteLockCommand),
     User(RemoteUserCommand),
+    Webhook(RemoteWebhookCommand),
 }
 
 // state
@@ -236,4 +237,58 @@ pub struct RemoteUserPasswd {
     /// new password (will prompt if not provided)
     #[argh(positional)]
     pub password: Option<String>,
+}
+
+// webhook
+
+#[derive(FromArgs)]
+/// Manage webhooks for a workspace
+#[argh(subcommand, name = "webhook")]
+pub struct RemoteWebhookCommand {
+    #[argh(subcommand)]
+    pub subcommand: RemoteWebhookSubCommand,
+}
+
+#[derive(FromArgs)]
+#[argh(subcommand)]
+pub enum RemoteWebhookSubCommand {
+    Add(RemoteWebhookAdd),
+    List(RemoteWebhookList),
+    Remove(RemoteWebhookRemove),
+}
+
+#[derive(FromArgs)]
+/// Register a webhook for a workspace
+#[argh(subcommand, name = "add")]
+pub struct RemoteWebhookAdd {
+    /// workspace name (e.g. infra/prod)
+    #[argh(positional)]
+    pub workspace: String,
+
+    /// webhook URL to POST events to
+    #[argh(positional)]
+    pub url: String,
+
+    /// comma-separated events to subscribe to (default: all)
+    /// e.g. state.push,lock.acquire
+    #[argh(option)]
+    pub events: Option<String>,
+}
+
+#[derive(FromArgs)]
+/// List webhooks for a workspace
+#[argh(subcommand, name = "list")]
+pub struct RemoteWebhookList {
+    /// workspace name
+    #[argh(positional)]
+    pub workspace: String,
+}
+
+#[derive(FromArgs)]
+/// Remove a webhook by ID
+#[argh(subcommand, name = "remove")]
+pub struct RemoteWebhookRemove {
+    /// webhook ID (from webhook list)
+    #[argh(positional)]
+    pub id: String,
 }
