@@ -37,6 +37,13 @@ impl StateContainer {
     }
 }
 
+fn validate_name(name: &str) -> Result<(), StatusCode> {
+    if name.is_empty() || name.contains('/') || name.contains('\\') || name == ".." || name == "." {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+    Ok(())
+}
+
 /// Get the current terraform state
 /// State will be fetched via GET by Terraform.
 pub async fn get_state(
@@ -44,6 +51,7 @@ pub async fn get_state(
     Path(name): Path<String>,
     _auth: BasicAuthUser,
 ) -> Result<Bytes, StatusCode> {
+    validate_name(&name)?;
     tracing::info!("🔖 Getting state for {name}");
 
     let states = &app.state;
@@ -68,6 +76,7 @@ pub async fn put_state(
     _auth: BasicAuthUser,
     body: Bytes,
 ) -> Result<StatusCode, StatusCode> {
+    validate_name(&name)?;
     tracing::info!("✍️ Trying to update state for {name}");
 
     if let Some(lock_id) = lock.ID {
@@ -89,6 +98,7 @@ pub async fn delete_state(
     Query(lock): Query<LockQuery>,
     _auth: BasicAuthUser,
 ) -> Result<StatusCode, StatusCode> {
+    validate_name(&name)?;
     tracing::info!("♻️ Trying to delete state for {name}");
 
     if let Some(lock_id) = lock.ID {

@@ -71,6 +71,13 @@ impl LockContainer {
     }
 }
 
+fn validate_name(name: &str) -> Result<(), StatusCode> {
+    if name.is_empty() || name.contains('/') || name.contains('\\') || name == ".." || name == "." {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+    Ok(())
+}
+
 /// Create a lock on state
 pub async fn lock(
     _auth: BasicAuthUser,
@@ -78,6 +85,7 @@ pub async fn lock(
     Path(name): Path<String>,
     Json(info): Json<LockInfo>,
 ) -> Result<Json<LockInfo>, StatusCode> {
+    validate_name(&name)?;
     tracing::info!("🔒 Trying to lock {name}");
 
     let locks = &app.locks;
@@ -98,6 +106,7 @@ pub async fn unlock(
     State(app): State<AppState>,
     Path(name): Path<String>,
 ) -> Result<Json<LockInfo>, StatusCode> {
+    validate_name(&name)?;
     tracing::info!("🔓 Unlocking {name}");
     let locks = &app.locks;
 

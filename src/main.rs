@@ -45,14 +45,28 @@ async fn main() {
                         .unwrap();
                 }
                 cli::UserCommands::ChangePassword(args) => {
-                    if let Some(_user) = users.find(&args.username).await {
-                        todo!()
+                    if users.find(&args.username).await.is_some() {
+                        let old_pass = readline("Current password: ");
+                        let new_pass = args.password.unwrap_or_else(|| readline("New password: "));
+                        match users.passwd(&args.username, &old_pass, &new_pass).await {
+                            Ok(()) => println!("Password changed successfully"),
+                            Err(()) => println!("Error: incorrect current password"),
+                        }
                     } else {
                         println!("Error: unknown user");
                     }
                 }
-                cli::UserCommands::Delete(_args) => {
-                    todo!()
+                cli::UserCommands::Delete(args) => {
+                    if users.find(&args.username).await.is_some() {
+                        // TODO: implement user deletion in authur upstream, then replace this
+                        let path = format!("./users/users/{}", args.username);
+                        match std::fs::remove_file(&path) {
+                            Ok(()) => println!("User '{}' deleted", args.username),
+                            Err(e) => println!("Error deleting user: {e}"),
+                        }
+                    } else {
+                        println!("Error: unknown user");
+                    }
                 }
                 cli::UserCommands::List(_) => {
                     let users = users.find_all().await;
