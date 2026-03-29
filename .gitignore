@@ -1,4 +1,7 @@
 /target
 /state
+/versions
 /locks
 /users
+/webhooks.json
+/data

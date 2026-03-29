@@ -81,11 +81,11 @@
               "/bin/terrarium"
               "serve"
             ];
-            WorkingDir = "/";
+            WorkingDir = "/app";
           };
 
           fakeRootCommands = ''
-            mkdir -p /usr /usr/bin /etc /tmp /root
+            mkdir -p /usr /usr/bin /etc /tmp /root /app
             ln -s /bin /usr/bin
             chmod 700 /root
             echo "root:x:0:0:root:/root:/bin/sh" > /etc/passwd
