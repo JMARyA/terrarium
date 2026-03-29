@@ -12,7 +12,10 @@ pub struct Cli {
 pub enum SubCommand {
     Serve(ServeCommand),
     User(UserCommand),
+    Remote(RemoteCommand),
 }
+
+// ── Local server commands ────────────────────────────────────────────────────
 
 #[derive(FromArgs)]
 /// Start the server
@@ -21,7 +24,7 @@ pub struct ServeCommand {}
 
 #[derive(FromArgs)]
 #[argh(subcommand, name = "user")]
-/// user commands
+/// Manage local user database (server-side admin)
 pub struct UserCommand {
     #[argh(subcommand)]
     pub subcommand: UserCommands,
@@ -75,3 +78,116 @@ pub struct ChangePassword {
 /// List all users
 #[argh(subcommand, name = "list")]
 pub struct ListUsers {}
+
+// ── Remote client commands ───────────────────────────────────────────────────
+
+#[derive(FromArgs)]
+/// Interact with a remote terrarium server
+#[argh(subcommand, name = "remote")]
+pub struct RemoteCommand {
+    /// path to config file (overrides TERRARIUM_CONFIG env var)
+    #[argh(option)]
+    pub config: Option<String>,
+
+    #[argh(subcommand)]
+    pub subcommand: RemoteSubCommand,
+}
+
+#[derive(FromArgs)]
+#[argh(subcommand)]
+pub enum RemoteSubCommand {
+    State(RemoteStateCommand),
+    Lock(RemoteLockCommand),
+    User(RemoteUserCommand),
+}
+
+// state
+
+#[derive(FromArgs)]
+/// Manage terraform states on the server
+#[argh(subcommand, name = "state")]
+pub struct RemoteStateCommand {
+    #[argh(subcommand)]
+    pub subcommand: RemoteStateSubCommand,
+}
+
+#[derive(FromArgs)]
+#[argh(subcommand)]
+pub enum RemoteStateSubCommand {
+    List(RemoteStateList),
+    Get(RemoteStateGet),
+    Unlock(RemoteStateUnlock),
+}
+
+#[derive(FromArgs)]
+/// List all states
+#[argh(subcommand, name = "list")]
+pub struct RemoteStateList {}
+
+#[derive(FromArgs)]
+/// Get a state's content (pretty-printed by default)
+#[argh(subcommand, name = "get")]
+pub struct RemoteStateGet {
+    /// state name
+    #[argh(positional)]
+    pub name: String,
+
+    /// output raw JSON without formatting
+    #[argh(switch)]
+    pub raw: bool,
+}
+
+#[derive(FromArgs)]
+/// Force-unlock a state
+#[argh(subcommand, name = "unlock")]
+pub struct RemoteStateUnlock {
+    /// state name
+    #[argh(positional)]
+    pub name: String,
+}
+
+// lock
+
+#[derive(FromArgs)]
+/// Inspect active locks on the server
+#[argh(subcommand, name = "lock")]
+pub struct RemoteLockCommand {
+    #[argh(subcommand)]
+    pub subcommand: RemoteLockSubCommand,
+}
+
+#[derive(FromArgs)]
+#[argh(subcommand)]
+pub enum RemoteLockSubCommand {
+    List(RemoteLockList),
+}
+
+#[derive(FromArgs)]
+/// List all active locks
+#[argh(subcommand, name = "list")]
+pub struct RemoteLockList {}
+
+// user (self-service)
+
+#[derive(FromArgs)]
+/// Self-service user commands (acts on your own account via the API)
+#[argh(subcommand, name = "user")]
+pub struct RemoteUserCommand {
+    #[argh(subcommand)]
+    pub subcommand: RemoteUserSubCommand,
+}
+
+#[derive(FromArgs)]
+#[argh(subcommand)]
+pub enum RemoteUserSubCommand {
+    Passwd(RemoteUserPasswd),
+}
+
+#[derive(FromArgs)]
+/// Change your own password
+#[argh(subcommand, name = "passwd")]
+pub struct RemoteUserPasswd {
+    /// new password (will prompt if not provided)
+    #[argh(positional)]
+    pub password: Option<String>,
+}

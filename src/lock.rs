@@ -7,7 +7,7 @@ use axum::{
 };
 use dashmap::DashMap;
 use serde::{Deserialize, Serialize};
-use std::{path::PathBuf, sync::Arc};
+use std::{collections::HashMap, path::PathBuf, sync::Arc};
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 #[allow(non_snake_case)]
@@ -57,6 +57,13 @@ impl LockContainer {
         self.get(name).map_or(false, |info| info.ID == lock_id)
     }
 
+    pub fn list(&self) -> HashMap<String, LockInfo> {
+        self.locks
+            .iter()
+            .map(|e| (e.key().clone(), e.value().clone()))
+            .collect()
+    }
+
     pub fn insert(&self, name: &str, lock_info: LockInfo) {
         let name_dir = self.persisted.join(name);
         if !name_dir.exists() {
@@ -69,6 +76,14 @@ impl LockContainer {
 
         self.locks.insert(name.to_string(), lock_info);
     }
+}
+
+/// List all active locks
+pub async fn list_locks(
+    State(app): State<AppState>,
+    _auth: BasicAuthUser,
+) -> Json<HashMap<String, LockInfo>> {
+    Json(app.locks.list())
 }
 
 fn validate_name(name: &str) -> Result<(), StatusCode> {

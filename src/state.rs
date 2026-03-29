@@ -1,4 +1,5 @@
 use authur::extractor::BasicAuthUser;
+use axum::Json;
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::{body::Bytes, extract::Query};
@@ -35,6 +36,27 @@ impl StateContainer {
         let path = self.dir.join(name);
         std::fs::write(path, state).unwrap();
     }
+
+    pub fn list(&self) -> Vec<String> {
+        let mut names: Vec<String> = std::fs::read_dir(&self.dir)
+            .map(|entries| {
+                entries
+                    .filter_map(|e| e.ok())
+                    .filter_map(|e| e.file_name().into_string().ok())
+                    .collect()
+            })
+            .unwrap_or_default();
+        names.sort();
+        names
+    }
+}
+
+/// List all state names
+pub async fn list_states(
+    State(app): State<AppState>,
+    _auth: BasicAuthUser,
+) -> Json<Vec<String>> {
+    Json(app.state.list())
 }
 
 fn validate_name(name: &str) -> Result<(), StatusCode> {
