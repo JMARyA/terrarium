@@ -87,8 +87,13 @@ pub async fn list_locks(
 }
 
 fn validate_name(name: &str) -> Result<(), StatusCode> {
-    if name.is_empty() || name.contains('/') || name.contains('\\') || name == ".." || name == "." {
+    if name.is_empty() || name.starts_with('/') || name.ends_with('/') || name.contains('\\') {
         return Err(StatusCode::BAD_REQUEST);
+    }
+    for component in name.split('/') {
+        if component.is_empty() || component == ".." || component == "." {
+            return Err(StatusCode::BAD_REQUEST);
+        }
     }
     Ok(())
 }
@@ -102,6 +107,11 @@ pub async fn lock(
 ) -> Result<Json<LockInfo>, StatusCode> {
     validate_name(&name)?;
     tracing::info!("🔒 Trying to lock {name}");
+
+    if app.state.is_archived(&name) {
+        tracing::info!("📦 State {name} is archived, rejecting lock");
+        return Err(StatusCode::FORBIDDEN);
+    }
 
     let locks = &app.locks;
 

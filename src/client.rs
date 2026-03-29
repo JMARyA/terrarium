@@ -21,10 +21,14 @@ impl TerrariumClient {
         }
     }
 
-    pub async fn list_states(&self) -> Result<Vec<String>, String> {
+    pub async fn list_states(&self, prefix: Option<&str>) -> Result<Vec<String>, String> {
+        let mut url = format!("{}/state", self.base_url);
+        if let Some(p) = prefix {
+            url = format!("{url}?prefix={p}");
+        }
         let resp = self
             .client
-            .get(format!("{}/state", self.base_url))
+            .get(url)
             .basic_auth(&self.username, Some(&self.password))
             .send()
             .await
@@ -34,6 +38,22 @@ impl TerrariumClient {
             resp.json::<Vec<String>>().await.map_err(|e| e.to_string())
         } else {
             Err(format!("Server returned {}", resp.status()))
+        }
+    }
+
+    pub async fn archive_state(&self, name: &str) -> Result<(), String> {
+        let resp = self
+            .client
+            .post(format!("{}/archive/{name}", self.base_url))
+            .basic_auth(&self.username, Some(&self.password))
+            .send()
+            .await
+            .map_err(|e| e.to_string())?;
+
+        match resp.status() {
+            s if s.is_success() => Ok(()),
+            reqwest::StatusCode::NOT_FOUND => Err(format!("State '{name}' not found")),
+            s => Err(format!("Server returned {s}")),
         }
     }
 

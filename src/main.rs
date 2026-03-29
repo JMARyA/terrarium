@@ -96,8 +96,8 @@ async fn main() {
 
             match remote.subcommand {
                 cli::RemoteSubCommand::State(state_cmd) => match state_cmd.subcommand {
-                    cli::RemoteStateSubCommand::List(_) => {
-                        match client.list_states().await {
+                    cli::RemoteStateSubCommand::List(args) => {
+                        match client.list_states(args.prefix.as_deref()).await {
                             Ok(states) if states.is_empty() => println!("No states found"),
                             Ok(states) => {
                                 println!("States:");
@@ -127,6 +127,12 @@ async fn main() {
                             Ok(info) => {
                                 println!("Unlocked '{}' (lock ID: {})", args.name, info.ID)
                             }
+                            Err(e) => die(e),
+                        }
+                    }
+                    cli::RemoteStateSubCommand::Archive(args) => {
+                        match client.archive_state(&args.name).await {
+                            Ok(()) => println!("Archived '{}' — now read-only", args.name),
                             Err(e) => die(e),
                         }
                     }
@@ -190,13 +196,14 @@ async fn serve() {
     let app = Router::new()
         .route("/state", get(state::list_states))
         .route(
-            "/state/{name}",
+            "/state/{*name}",
             get(state::get_state)
                 .post(state::put_state)
                 .delete(state::delete_state),
         )
+        .route("/archive/{*name}", post(state::archive_state))
         .route("/lock", get(lock::list_locks))
-        .route("/lock/{name}", post(lock::lock).delete(lock::unlock))
+        .route("/lock/{*name}", post(lock::lock).delete(lock::unlock))
         .route("/user/password", put(user::change_own_password))
         .with_state(state);
 

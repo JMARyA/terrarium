@@ -117,12 +117,17 @@ pub enum RemoteStateSubCommand {
     List(RemoteStateList),
     Get(RemoteStateGet),
     Unlock(RemoteStateUnlock),
+    Archive(RemoteStateArchive),
 }
 
 #[derive(FromArgs)]
-/// List all states
+/// List all states, optionally scoped to a path prefix (e.g. "infra/")
 #[argh(subcommand, name = "list")]
-pub struct RemoteStateList {}
+pub struct RemoteStateList {
+    /// path prefix to filter by (e.g. infra/)
+    #[argh(positional)]
+    pub prefix: Option<String>,
+}
 
 #[derive(FromArgs)]
 /// Get a state's content (pretty-printed by default)
@@ -142,6 +147,15 @@ pub struct RemoteStateGet {
 #[argh(subcommand, name = "unlock")]
 pub struct RemoteStateUnlock {
     /// state name
+    #[argh(positional)]
+    pub name: String,
+}
+
+#[derive(FromArgs)]
+/// Archive a state — marks it read-only, rejects future pushes
+#[argh(subcommand, name = "archive")]
+pub struct RemoteStateArchive {
+    /// state name (e.g. infra/prod)
     #[argh(positional)]
     pub name: String,
 }
