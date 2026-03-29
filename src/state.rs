@@ -10,41 +10,67 @@ use crate::AppState;
 #[derive(Clone)]
 pub struct StateContainer {
     pub dir: PathBuf,
+    pub versions_dir: PathBuf,
 }
 
 impl StateContainer {
-    pub fn new(dir: PathBuf) -> Self {
+    pub fn new(dir: PathBuf, versions_dir: PathBuf) -> Self {
         std::fs::create_dir_all(&dir).unwrap();
-        Self { dir }
+        std::fs::create_dir_all(&versions_dir).unwrap();
+        Self { dir, versions_dir }
     }
 
     pub fn get(&self, name: &str) -> Option<Vec<u8>> {
         let path = self.dir.join(name);
-        if path.exists() {
-            Some(std::fs::read(path).unwrap())
-        } else {
-            None
-        }
+        if path.exists() { Some(std::fs::read(path).unwrap()) } else { None }
+    }
+
+    pub fn get_version(&self, name: &str, version: u32) -> Option<Vec<u8>> {
+        let path = self.versions_dir.join(name).join(version.to_string());
+        if path.exists() { std::fs::read(path).ok() } else { None }
+    }
+
+    pub fn list_versions(&self, name: &str) -> Vec<u32> {
+        let mut versions: Vec<u32> = std::fs::read_dir(self.versions_dir.join(name))
+            .map(|entries| {
+                entries
+                    .filter_map(|e| e.ok())
+                    .filter_map(|e| e.file_name().into_string().ok())
+                    .filter_map(|n| n.parse::<u32>().ok())
+                    .collect()
+            })
+            .unwrap_or_default();
+        versions.sort_unstable();
+        versions
     }
 
     pub fn remove(&self, name: &str) {
         let _ = std::fs::remove_file(self.dir.join(name));
         let _ = std::fs::remove_file(self.dir.join(format!("{name}.archived")));
+        // version history is intentionally kept
     }
 
     pub fn insert(&self, name: &str, state: Vec<u8>) {
+        // Write current (head) state
         let path = self.dir.join(name);
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent).unwrap();
         }
-        std::fs::write(path, state).unwrap();
+        std::fs::write(&path, &state).unwrap();
+
+        // Append versioned copy
+        let version = self.list_versions(name).last().copied().unwrap_or(0) + 1;
+        let version_path = self.versions_dir.join(name).join(version.to_string());
+        if let Some(parent) = version_path.parent() {
+            std::fs::create_dir_all(parent).unwrap();
+        }
+        std::fs::write(version_path, state).unwrap();
     }
 
     pub fn is_archived(&self, name: &str) -> bool {
         self.dir.join(format!("{name}.archived")).exists()
     }
 
-    /// Mark a state as archived (read-only). Returns false if the state doesn't exist.
     pub fn archive(&self, name: &str) -> bool {
         if !self.dir.join(name).exists() {
             return false;
@@ -56,7 +82,6 @@ impl StateContainer {
         std::fs::write(sidecar, b"").is_ok()
     }
 
-    /// List state names, optionally scoped to a path prefix (e.g. "infra/").
     pub fn list(&self, prefix: Option<&str>) -> Vec<String> {
         let search_dir = match prefix {
             Some(p) => self.dir.join(p.trim_end_matches('/')),
@@ -69,9 +94,7 @@ impl StateContainer {
     }
 
     fn collect_states(&self, dir: &FsPath, names: &mut Vec<String>) {
-        let Ok(entries) = std::fs::read_dir(dir) else {
-            return;
-        };
+        let Ok(entries) = std::fs::read_dir(dir) else { return };
         for entry in entries.filter_map(|e| e.ok()) {
             let path = entry.path();
             if path.is_dir() {
@@ -108,15 +131,24 @@ fn validate_name(name: &str) -> Result<(), StatusCode> {
 
 fn validate_prefix(prefix: &str) -> Result<(), StatusCode> {
     let trimmed = prefix.trim_end_matches('/');
-    if trimmed.is_empty() {
-        return Ok(());
-    }
+    if trimmed.is_empty() { return Ok(()); }
     validate_name(trimmed)
 }
 
 #[derive(serde::Deserialize)]
 pub struct ListQuery {
     pub prefix: Option<String>,
+}
+
+#[derive(serde::Deserialize)]
+pub struct GetQuery {
+    pub version: Option<u32>,
+}
+
+#[derive(serde::Deserialize)]
+#[allow(non_snake_case)]
+pub struct LockQuery {
+    pub ID: Option<String>,
 }
 
 /// List all state names, optionally scoped to a path prefix
@@ -131,7 +163,17 @@ pub async fn list_states(
     Ok(Json(app.state.list(q.prefix.as_deref())))
 }
 
-/// Archive a state — marks it read-only, future pushes will be rejected
+/// List all versions for a state
+pub async fn list_versions(
+    State(app): State<AppState>,
+    Path(name): Path<String>,
+    _auth: BasicAuthUser,
+) -> Result<Json<Vec<u32>>, StatusCode> {
+    validate_name(&name)?;
+    Ok(Json(app.state.list_versions(&name)))
+}
+
+/// Archive a state — marks it read-only, rejects future pushes
 pub async fn archive_state(
     State(app): State<AppState>,
     Path(name): Path<String>,
@@ -146,24 +188,20 @@ pub async fn archive_state(
     }
 }
 
-/// Get the current terraform state
+/// Get the current terraform state, or a specific version with ?version=N
 pub async fn get_state(
     State(app): State<AppState>,
     Path(name): Path<String>,
+    Query(q): Query<GetQuery>,
     _auth: BasicAuthUser,
 ) -> Result<Bytes, StatusCode> {
     validate_name(&name)?;
     tracing::info!("🔖 Getting state for {name}");
-    match app.state.get(&name) {
-        Some(data) => Ok(Bytes::from(data)),
-        None => Err(StatusCode::NOT_FOUND),
-    }
-}
-
-#[derive(Debug, serde::Deserialize)]
-#[allow(non_snake_case)]
-pub struct LockQuery {
-    pub ID: Option<String>,
+    let data = match q.version {
+        Some(v) => app.state.get_version(&name, v),
+        None => app.state.get(&name),
+    };
+    data.map(Bytes::from).ok_or(StatusCode::NOT_FOUND)
 }
 
 /// Update terraform state via POST

@@ -116,6 +116,7 @@ pub struct RemoteStateCommand {
 pub enum RemoteStateSubCommand {
     List(RemoteStateList),
     Get(RemoteStateGet),
+    Versions(RemoteStateVersions),
     Unlock(RemoteStateUnlock),
     Archive(RemoteStateArchive),
 }
@@ -140,6 +141,19 @@ pub struct RemoteStateGet {
     /// output raw JSON without formatting
     #[argh(switch)]
     pub raw: bool,
+
+    /// retrieve a specific version number instead of the current state
+    #[argh(option)]
+    pub version: Option<u32>,
+}
+
+#[derive(FromArgs)]
+/// List all available versions for a state
+#[argh(subcommand, name = "versions")]
+pub struct RemoteStateVersions {
+    /// state name
+    #[argh(positional)]
+    pub name: String,
 }
 
 #[derive(FromArgs)]

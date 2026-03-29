@@ -57,10 +57,14 @@ impl TerrariumClient {
         }
     }
 
-    pub async fn get_state(&self, name: &str) -> Result<bytes::Bytes, String> {
+    pub async fn get_state(&self, name: &str, version: Option<u32>) -> Result<bytes::Bytes, String> {
+        let url = match version {
+            Some(v) => format!("{}/state/{name}?version={v}", self.base_url),
+            None => format!("{}/state/{name}", self.base_url),
+        };
         let resp = self
             .client
-            .get(format!("{}/state/{name}", self.base_url))
+            .get(url)
             .basic_auth(&self.username, Some(&self.password))
             .send()
             .await
@@ -70,6 +74,22 @@ impl TerrariumClient {
             s if s.is_success() => resp.bytes().await.map_err(|e| e.to_string()),
             reqwest::StatusCode::NOT_FOUND => Err(format!("State '{name}' not found")),
             s => Err(format!("Server returned {s}")),
+        }
+    }
+
+    pub async fn list_versions(&self, name: &str) -> Result<Vec<u32>, String> {
+        let resp = self
+            .client
+            .get(format!("{}/versions/{name}", self.base_url))
+            .basic_auth(&self.username, Some(&self.password))
+            .send()
+            .await
+            .map_err(|e| e.to_string())?;
+
+        if resp.status().is_success() {
+            resp.json::<Vec<u32>>().await.map_err(|e| e.to_string())
+        } else {
+            Err(format!("Server returned {}", resp.status()))
         }
     }
 

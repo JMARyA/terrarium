@@ -109,7 +109,7 @@ async fn main() {
                         }
                     }
                     cli::RemoteStateSubCommand::Get(args) => {
-                        match client.get_state(&args.name).await {
+                        match client.get_state(&args.name, args.version).await {
                             Ok(data) if args.raw => {
                                 print!("{}", String::from_utf8_lossy(&data));
                             }
@@ -117,6 +117,18 @@ async fn main() {
                                 match serde_json::from_slice::<serde_json::Value>(&data) {
                                     Ok(v) => println!("{}", serde_json::to_string_pretty(&v).unwrap()),
                                     Err(_) => print!("{}", String::from_utf8_lossy(&data)),
+                                }
+                            }
+                            Err(e) => die(e),
+                        }
+                    }
+                    cli::RemoteStateSubCommand::Versions(args) => {
+                        match client.list_versions(&args.name).await {
+                            Ok(versions) if versions.is_empty() => println!("No versions found"),
+                            Ok(versions) => {
+                                println!("Versions for '{}':", args.name);
+                                for v in versions {
+                                    println!("  {v}");
                                 }
                             }
                             Err(e) => die(e),
@@ -188,7 +200,7 @@ fn die(msg: String) {
 
 async fn serve() {
     let state = AppState {
-        state: StateContainer::new("./state".into()),
+        state: StateContainer::new("./state".into(), "./versions".into()),
         locks: LockContainer::new("./locks".into()),
         users: authur::UserDB::new("./users").await,
     };
@@ -202,6 +214,7 @@ async fn serve() {
                 .delete(state::delete_state),
         )
         .route("/archive/{*name}", post(state::archive_state))
+        .route("/versions/{*name}", get(state::list_versions))
         .route("/lock", get(lock::list_locks))
         .route("/lock/{*name}", post(lock::lock).delete(lock::unlock))
         .route("/user/password", put(user::change_own_password))
