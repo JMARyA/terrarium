@@ -40,10 +40,11 @@ services:
       - ./data:/app # all state, locks, users, versions and webhooks live here
     environment:
       - "RUST_LOG=info"
+      - "TERRARIUM_DATA=/app"
     command: "/bin/terrarium serve"
 ```
 
-All data is stored under the working directory (`/app` in the container, `./data` on the host):
+All data is stored under `TERRARIUM_DATA` (`/app` in the container, `./data` on the host):
 
 | Path            | Contents             |
 | --------------- | -------------------- |
@@ -78,7 +79,11 @@ Workspace names support path prefixes: `infra/prod`, `apps/backend/staging`, etc
 
 ## User Management
 
-User management commands act directly on the local user database (run on the server).
+User management commands act directly on the local user database. When running in Docker, exec into the container or they'll write to a different path than the server uses:
+
+```shell
+docker compose exec terrarium /bin/terrarium user add alice
+```
 
 ```shell
 # Add a user (prompts for password if omitted)

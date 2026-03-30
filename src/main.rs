@@ -30,6 +30,15 @@ impl axum::extract::FromRef<AppState> for authur::UserDB<authur::vfs::PhysicalFS
     }
 }
 
+/// Returns the data directory, honoring TERRARIUM_DATA env var.
+/// Defaults to "." (relative to process CWD), which is /app inside the container.
+/// Set TERRARIUM_DATA=/ to use old absolute-path volume layout (/state, /users, /locks).
+fn data_dir() -> std::path::PathBuf {
+    std::path::PathBuf::from(
+        std::env::var("TERRARIUM_DATA").unwrap_or_else(|_| ".".to_string()),
+    )
+}
+
 #[tokio::main]
 async fn main() {
     tracing_subscriber::fmt::init();
@@ -40,7 +49,7 @@ async fn main() {
         cli::SubCommand::Serve(_) => serve().await,
 
         cli::SubCommand::User(user_command) => {
-            let users = authur::UserDB::new("./users").await;
+            let users = authur::UserDB::new(data_dir().join("users").to_str().unwrap()).await;
 
             match user_command.subcommand {
                 cli::UserCommands::Add(args) => {
@@ -65,7 +74,7 @@ async fn main() {
                 cli::UserCommands::Delete(args) => {
                     if users.find(&args.username).await.is_some() {
                         // TODO: implement user deletion in authur upstream, then replace this
-                        let path = format!("./users/users/{}", args.username);
+                        let path = data_dir().join("users").join("users").join(&args.username);
                         match std::fs::remove_file(&path) {
                             Ok(()) => println!("User '{}' deleted", args.username),
                             Err(e) => println!("Error deleting user: {e}"),
@@ -269,11 +278,12 @@ fn die(msg: String) -> ! {
 }
 
 async fn serve() {
+    let data = data_dir();
     let state = AppState {
-        state: StateContainer::new("./state".into(), "./versions".into()),
-        locks: LockContainer::new("./locks".into()),
-        users: authur::UserDB::new("./users").await,
-        webhooks: WebhookStore::new("./webhooks.json".into()),
+        state: StateContainer::new(data.join("state"), data.join("versions")),
+        locks: LockContainer::new(data.join("locks")),
+        users: authur::UserDB::new(data.join("users").to_str().unwrap()).await,
+        webhooks: WebhookStore::new(data.join("webhooks.json")),
     };
 
     let app = Router::new()
