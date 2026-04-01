@@ -82,9 +82,18 @@ impl StateContainer {
         std::fs::write(sidecar, b"").is_ok()
     }
 
-    pub fn list(&self, prefix: Option<&str>) -> Vec<String> {
+    pub fn unarchive(&self, name: &str) -> bool {
+        let sidecar = self.dir.join(format!("{name}.archived"));
+        if sidecar.exists() {
+            std::fs::remove_file(sidecar).is_ok()
+        } else {
+            false
+        }
+    }
+
+    pub fn list(&self, prefix: Option<&str>, archived: bool) -> Vec<String> {
         let mut names = Vec::new();
-        self.collect_states(&self.dir.clone(), &mut names);
+        self.collect_states(&self.dir.clone(), &mut names, archived);
         if let Some(p) = prefix {
             names.retain(|n| n.starts_with(p));
         }
@@ -92,18 +101,26 @@ impl StateContainer {
         names
     }
 
-    fn collect_states(&self, dir: &FsPath, names: &mut Vec<String>) {
+    fn collect_states(&self, dir: &FsPath, names: &mut Vec<String>, archived: bool) {
         let Ok(entries) = std::fs::read_dir(dir) else { return };
         for entry in entries.filter_map(|e| e.ok()) {
             let path = entry.path();
             if path.is_dir() {
-                self.collect_states(&path, names);
+                self.collect_states(&path, names, archived);
             } else {
                 let file_name = match path.file_name().and_then(|n| n.to_str()) {
                     Some(n) => n,
                     None => continue,
                 };
+                // Never list .archived sidecar files themselves
                 if file_name.ends_with(".archived") {
+                    continue;
+                }
+                // Filter by archived status via sidecar presence
+                let mut sidecar = path.as_os_str().to_owned();
+                sidecar.push(".archived");
+                let is_archived = std::path::Path::new(&sidecar).exists();
+                if is_archived != archived {
                     continue;
                 }
                 if let Ok(rel) = path.strip_prefix(&self.dir) {
@@ -137,6 +154,7 @@ fn validate_prefix(prefix: &str) -> Result<(), StatusCode> {
 #[derive(serde::Deserialize)]
 pub struct ListQuery {
     pub prefix: Option<String>,
+    pub archived: Option<bool>,
 }
 
 #[derive(serde::Deserialize)]
@@ -159,7 +177,7 @@ pub async fn list_states(
     if let Some(ref p) = q.prefix {
         validate_prefix(p)?;
     }
-    Ok(Json(app.state.list(q.prefix.as_deref())))
+    Ok(Json(app.state.list(q.prefix.as_deref(), q.archived.unwrap_or(false))))
 }
 
 /// List all versions for a state
@@ -170,6 +188,22 @@ pub async fn list_versions(
 ) -> Result<Json<Vec<u32>>, StatusCode> {
     validate_name(&name)?;
     Ok(Json(app.state.list_versions(&name)))
+}
+
+/// Unarchive a state — removes the read-only marker
+pub async fn unarchive_state(
+    State(app): State<AppState>,
+    Path(name): Path<String>,
+    BasicAuthUser(user): BasicAuthUser,
+) -> Result<StatusCode, StatusCode> {
+    validate_name(&name)?;
+    tracing::info!("📬 Unarchiving state {name}");
+    if app.state.unarchive(&name) {
+        app.webhooks.fire("state.unarchive", &name, None, &user.username).await;
+        Ok(StatusCode::OK)
+    } else {
+        Err(StatusCode::NOT_FOUND)
+    }
 }
 
 /// Archive a state — marks it read-only, rejects future pushes

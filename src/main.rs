@@ -128,7 +128,7 @@ async fn main() {
             match remote.subcommand {
                 cli::RemoteSubCommand::State(state_cmd) => match state_cmd.subcommand {
                     cli::RemoteStateSubCommand::List(args) => {
-                        match client.list_states(args.prefix.as_deref()).await {
+                        match client.list_states(args.prefix.as_deref(), args.archived).await {
                             Ok(states) if states.is_empty() => println!("No states found"),
                             Ok(states) => {
                                 println!("States:");
@@ -208,6 +208,12 @@ async fn main() {
                     cli::RemoteStateSubCommand::Archive(args) => {
                         match client.archive_state(&args.name).await {
                             Ok(()) => println!("Archived '{}' — now read-only", args.name),
+                            Err(e) => die(e),
+                        }
+                    }
+                    cli::RemoteStateSubCommand::Unarchive(args) => {
+                        match client.unarchive_state(&args.name).await {
+                            Ok(()) => println!("Unarchived '{}' — writes re-enabled", args.name),
                             Err(e) => die(e),
                         }
                     }
@@ -319,7 +325,7 @@ async fn serve() {
                 .post(state::put_state)
                 .delete(state::delete_state),
         )
-        .route("/archive/{*name}", post(state::archive_state))
+        .route("/archive/{*name}", post(state::archive_state).delete(state::unarchive_state))
         .route("/versions/{*name}", get(state::list_versions))
         .route("/lock", get(lock::list_locks))
         .route("/lock/{*name}", post(lock::lock).delete(lock::unlock))

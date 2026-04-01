@@ -133,6 +133,7 @@ pub enum RemoteStateSubCommand {
     Diff(RemoteStateDiff),
     Unlock(RemoteStateUnlock),
     Archive(RemoteStateArchive),
+    Unarchive(RemoteStateUnarchive),
 }
 
 #[derive(FromArgs)]
@@ -142,6 +143,10 @@ pub struct RemoteStateList {
     /// path prefix to filter by (e.g. infra/)
     #[argh(positional)]
     pub prefix: Option<String>,
+
+    /// show only archived states instead of active ones
+    #[argh(switch)]
+    pub archived: bool,
 }
 
 #[derive(FromArgs)]
@@ -200,6 +205,15 @@ pub struct RemoteStateUnlock {
 /// Archive a state — marks it read-only, rejects future pushes
 #[argh(subcommand, name = "archive")]
 pub struct RemoteStateArchive {
+    /// state name (e.g. infra/prod)
+    #[argh(positional)]
+    pub name: String,
+}
+
+#[derive(FromArgs)]
+/// Unarchive a state — re-enables writes
+#[argh(subcommand, name = "unarchive")]
+pub struct RemoteStateUnarchive {
     /// state name (e.g. infra/prod)
     #[argh(positional)]
     pub name: String,

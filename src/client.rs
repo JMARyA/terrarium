@@ -22,11 +22,19 @@ impl TerrariumClient {
         }
     }
 
-    pub async fn list_states(&self, prefix: Option<&str>) -> Result<Vec<String>, String> {
-        let mut url = format!("{}/state", self.base_url);
+    pub async fn list_states(&self, prefix: Option<&str>, archived: bool) -> Result<Vec<String>, String> {
+        let mut params: Vec<String> = Vec::new();
         if let Some(p) = prefix {
-            url = format!("{url}?prefix={p}");
+            params.push(format!("prefix={p}"));
         }
+        if archived {
+            params.push("archived=true".to_string());
+        }
+        let url = if params.is_empty() {
+            format!("{}/state", self.base_url)
+        } else {
+            format!("{}/state?{}", self.base_url, params.join("&"))
+        };
         let resp = self
             .client
             .get(url)
@@ -39,6 +47,22 @@ impl TerrariumClient {
             resp.json::<Vec<String>>().await.map_err(|e| e.to_string())
         } else {
             Err(format!("Server returned {}", resp.status()))
+        }
+    }
+
+    pub async fn unarchive_state(&self, name: &str) -> Result<(), String> {
+        let resp = self
+            .client
+            .delete(format!("{}/archive/{name}", self.base_url))
+            .basic_auth(&self.username, Some(&self.password))
+            .send()
+            .await
+            .map_err(|e| e.to_string())?;
+
+        match resp.status() {
+            s if s.is_success() => Ok(()),
+            reqwest::StatusCode::NOT_FOUND => Err(format!("State '{name}' not found or not archived")),
+            s => Err(format!("Server returned {s}")),
         }
     }
 
