@@ -5,6 +5,7 @@ use axum::{
     Router,
     routing::{get, post, put},
 };
+use colored::Colorize as _;
 
 use crate::{lock::LockContainer, state::StateContainer, webhook::WebhookStore};
 
@@ -65,11 +66,11 @@ async fn main() {
                         let old_pass = readline("Current password: ");
                         let new_pass = args.password.unwrap_or_else(|| readline("New password: "));
                         match users.passwd(&args.username, &old_pass, &new_pass).await {
-                            Ok(()) => println!("Password changed successfully"),
-                            Err(()) => println!("Error: incorrect current password"),
+                            Ok(()) => println!("{}", "Password changed successfully".green()),
+                            Err(()) => eprintln!("{}", "Error: incorrect current password".red()),
                         }
                     } else {
-                        println!("Error: unknown user");
+                        eprintln!("{}", "Error: unknown user".red());
                     }
                 }
                 cli::UserCommands::Delete(args) => {
@@ -77,18 +78,18 @@ async fn main() {
                         // TODO: implement user deletion in authur upstream, then replace this
                         let path = data_dir().join("users").join("users").join(&args.username);
                         match std::fs::remove_file(&path) {
-                            Ok(()) => println!("User '{}' deleted", args.username),
-                            Err(e) => println!("Error deleting user: {e}"),
+                            Ok(()) => println!("User {} deleted", args.username.bold()),
+                            Err(e) => eprintln!("{} {e}", "Error deleting user:".red()),
                         }
                     } else {
-                        println!("Error: unknown user");
+                        eprintln!("{}", "Error: unknown user".red());
                     }
                 }
                 cli::UserCommands::List(_) => {
                     let users = users.find_all().await;
-                    println!("Users:");
+                    println!("{}:", "Users".bold());
                     for u in users {
-                        println!("- {u}");
+                        println!("  {u}");
                     }
                 }
             }
@@ -109,7 +110,7 @@ async fn main() {
             let password = rpassword::prompt_password("Password: ").unwrap_or_else(|_| readline("Password: "));
 
             match config::write(&config_path, &url, &username, &password) {
-                Ok(()) => println!("Saved to {:?} (chmod 600)", config_path),
+                Ok(()) => println!("{} {:?} {}", "Saved to".green(), config_path, "(chmod 600)".dimmed()),
                 Err(e) => die(e),
             }
         }
@@ -119,7 +120,7 @@ async fn main() {
             let config = match config {
                 Ok(c) => c,
                 Err(e) => {
-                    eprintln!("Configuration error: {e}");
+                    eprintln!("{} {e}", "configuration error:".bold().red());
                     std::process::exit(1);
                 }
             };
@@ -130,11 +131,23 @@ async fn main() {
                 cli::RemoteSubCommand::State(state_cmd) => match state_cmd.subcommand {
                     cli::RemoteStateSubCommand::List(args) => {
                         match client.list_states(args.prefix.as_deref(), args.archived).await {
-                            Ok(states) if states.is_empty() => println!("No states found"),
+                            Ok(states) if states.is_empty() => {
+                                let msg = if args.archived {
+                                    "No archived states found"
+                                } else {
+                                    "No states found"
+                                };
+                                println!("{}", msg.dimmed());
+                            }
                             Ok(states) => {
-                                println!("States:");
+                                let header = if args.archived {
+                                    "Archived states:".bold().yellow().to_string()
+                                } else {
+                                    "States:".bold().to_string()
+                                };
+                                println!("{header}");
                                 for s in states {
-                                    println!("  - {s}");
+                                    println!("  {s}");
                                 }
                             }
                             Err(e) => die(e),
@@ -149,28 +162,77 @@ async fn main() {
                                 let s = String::from_utf8_lossy(&data);
                                 match facet_json::from_str::<crate::tfstate::TfState>(&s) {
                                     Ok(state) => {
-                                        println!("State:        {}", args.name);
-                                        println!("Terraform:    {}", state.terraform_version);
-                                        println!("Serial:       {}", state.serial);
-                                        println!("Lineage:      {}", state.lineage);
+                                        let version_label = args.version
+                                            .map(|v| format!(" v{v}"))
+                                            .unwrap_or_default();
+                                        println!("{} {}{}",
+                                            "state    ".dimmed(),
+                                            args.name.bold(),
+                                            version_label.dimmed()
+                                        );
+                                        println!("{} {}",
+                                            "terraform".dimmed(),
+                                            state.terraform_version.cyan()
+                                        );
+                                        println!("{} {}",
+                                            "serial   ".dimmed(),
+                                            state.serial.to_string().cyan()
+                                        );
+                                        println!("{} {}",
+                                            "lineage  ".dimmed(),
+                                            state.lineage.dimmed()
+                                        );
+
                                         if !state.resources.is_empty() {
-                                            println!("\nResources ({}):", state.resources.len());
-                                            let mut addrs: Vec<String> = state.resources.iter()
-                                                .map(|r| r.address())
-                                                .collect();
-                                            addrs.sort();
-                                            for addr in &addrs {
-                                                println!("  {addr}");
+                                            // Group by resource type
+                                            let mut by_type: std::collections::BTreeMap<String, Vec<String>> =
+                                                Default::default();
+                                            for r in &state.resources {
+                                                let type_key = if r.mode == "data" {
+                                                    format!("data.{}", r.type_)
+                                                } else {
+                                                    r.type_.clone()
+                                                };
+                                                let instance_name = match &r.module {
+                                                    Some(m) => format!("{}.{}", m, r.name),
+                                                    None => r.name.clone(),
+                                                };
+                                                by_type.entry(type_key).or_default().push(instance_name);
+                                            }
+
+                                            println!("\n{} {}:",
+                                                "resources".bold(),
+                                                state.resources.len().to_string().cyan()
+                                            );
+                                            for (type_name, names) in &by_type {
+                                                if names.len() > 1 {
+                                                    println!("  {} {}",
+                                                        type_name.bold().cyan(),
+                                                        format!("({})", names.len()).dimmed()
+                                                    );
+                                                } else {
+                                                    println!("  {}", type_name.bold().cyan());
+                                                }
+                                                for name in names {
+                                                    println!("    {name}");
+                                                }
                                             }
                                         }
+
                                         if !state.outputs.is_empty() {
-                                            println!("\nOutputs:");
+                                            println!("\n{}:", "outputs".bold());
                                             let mut keys: Vec<_> = state.outputs.keys().collect();
                                             keys.sort();
                                             for k in keys {
                                                 let out = &state.outputs[k];
-                                                let suffix = if out.sensitive { " (sensitive)" } else { "" };
-                                                println!("  {k}{suffix}");
+                                                if out.sensitive {
+                                                    println!("  {} {}",
+                                                        k,
+                                                        "(sensitive)".yellow().dimmed()
+                                                    );
+                                                } else {
+                                                    println!("  {k}");
+                                                }
                                             }
                                         }
                                     }
@@ -187,15 +249,23 @@ async fn main() {
                     }
                     cli::RemoteStateSubCommand::Versions(args) => {
                         match client.list_versions(&args.name).await {
-                            Ok(versions) if versions.is_empty() => println!("No versions found"),
+                            Ok(versions) if versions.is_empty() => {
+                                println!("{}", "No versions found".dimmed());
+                            }
                             Ok(versions) => {
-                                println!("Versions for '{}':", args.name);
+                                println!("{} {}:",
+                                    "Versions for".dimmed(),
+                                    args.name.bold()
+                                );
                                 let current = versions.iter().max().copied();
                                 for v in &versions {
                                     if Some(*v) == current {
-                                        println!("  {v} (current)");
+                                        println!("  {} {}",
+                                            v.to_string().cyan(),
+                                            "(current)".green().bold()
+                                        );
                                     } else {
-                                        println!("  {v}");
+                                        println!("  {}", v.to_string().dimmed());
                                     }
                                 }
                             }
@@ -232,33 +302,49 @@ async fn main() {
                             addrs.sort();
                             addrs.dedup();
 
-                            println!("Diff: {} v{} → v{}", args.name, args.from, args.to);
+                            println!("{} {} {} {} {}",
+                                "diff".bold(),
+                                args.name.bold(),
+                                format!("v{}", args.from).cyan(),
+                                "→".dimmed(),
+                                format!("v{}", args.to).cyan(),
+                            );
                             let mut any_change = false;
 
                             if a.serial != b.serial || a.terraform_version != b.terraform_version {
                                 if a.terraform_version != b.terraform_version {
-                                    println!("  terraform: {} → {}", a.terraform_version, b.terraform_version);
+                                    println!("  {} {} {} {}",
+                                        "terraform:".dimmed(),
+                                        a.terraform_version.yellow(),
+                                        "→".dimmed(),
+                                        b.terraform_version.yellow()
+                                    );
                                 }
-                                println!("  serial: {} → {}", a.serial, b.serial);
+                                println!("  {} {} {} {}",
+                                    "serial:".dimmed(),
+                                    a.serial.to_string().yellow(),
+                                    "→".dimmed(),
+                                    b.serial.to_string().yellow()
+                                );
                                 any_change = true;
                             }
 
                             for addr in &addrs {
                                 match (a_map.get(addr), b_map.get(addr)) {
                                     (None, Some(_)) => {
-                                        println!("  + {addr}");
+                                        println!("  {} {}", "+".bold().green(), addr.green());
                                         any_change = true;
                                     }
                                     (Some(_), None) => {
-                                        println!("  - {addr}");
+                                        println!("  {} {}", "-".bold().red(), addr.red());
                                         any_change = true;
                                     }
                                     (Some(ra), Some(rb)) if ra.instances != rb.instances => {
-                                        println!("  ~ {addr}");
+                                        println!("  {} {}", "~".bold().yellow(), addr.yellow());
                                         for (i, (ia, ib)) in ra.instances.iter().zip(rb.instances.iter()).enumerate() {
                                             if ia.attributes != ib.attributes {
                                                 if ra.instances.len() > 1 {
-                                                    println!("    [{}]", i);
+                                                    println!("    {}", format!("[{i}]").dimmed());
                                                 }
                                                 let diff = format!("{}", ia.attributes.diff(&ib.attributes));
                                                 for line in diff.lines() {
@@ -273,7 +359,7 @@ async fn main() {
                             }
 
                             if !any_change {
-                                println!("  (no changes)");
+                                println!("  {}", "(no changes)".dimmed());
                             }
                         } else {
                             // Non-TF state or unparseable — fall back to generic Value diff
@@ -290,21 +376,32 @@ async fn main() {
                     }
                     cli::RemoteStateSubCommand::Unlock(args) => {
                         match client.unlock_state(&args.name).await {
-                            Ok(info) => {
-                                println!("Unlocked '{}' (lock ID: {})", args.name, info.ID)
-                            }
+                            Ok(info) => println!("{} {} {} {}",
+                                "Unlocked".green(),
+                                args.name.bold(),
+                                "— lock ID:".dimmed(),
+                                info.ID.cyan()
+                            ),
                             Err(e) => die(e),
                         }
                     }
                     cli::RemoteStateSubCommand::Archive(args) => {
                         match client.archive_state(&args.name).await {
-                            Ok(()) => println!("Archived '{}' — now read-only", args.name),
+                            Ok(()) => println!("{} {} {}",
+                                "Archived".yellow(),
+                                args.name.bold(),
+                                "— now read-only".dimmed()
+                            ),
                             Err(e) => die(e),
                         }
                     }
                     cli::RemoteStateSubCommand::Unarchive(args) => {
                         match client.unarchive_state(&args.name).await {
-                            Ok(()) => println!("Unarchived '{}' — writes re-enabled", args.name),
+                            Ok(()) => println!("{} {} {}",
+                                "Unarchived".green(),
+                                args.name.bold(),
+                                "— writes re-enabled".dimmed()
+                            ),
                             Err(e) => die(e),
                         }
                     }
@@ -313,16 +410,20 @@ async fn main() {
                 cli::RemoteSubCommand::Lock(lock_cmd) => match lock_cmd.subcommand {
                     cli::RemoteLockSubCommand::List(_) => {
                         match client.list_locks().await {
-                            Ok(locks) if locks.is_empty() => println!("No active locks"),
+                            Ok(locks) if locks.is_empty() => {
+                                println!("{}", "No active locks".dimmed());
+                            }
                             Ok(locks) => {
-                                println!("Active locks:");
+                                println!("{}:", "Active locks".bold());
                                 let mut entries: Vec<_> = locks.into_iter().collect();
                                 entries.sort_by(|a, b| a.0.cmp(&b.0));
                                 for (name, info) in entries {
-                                    println!(
-                                        "  - {name}: locked by {} (ID: {})",
-                                        info.Who.as_deref().unwrap_or("unknown"),
-                                        info.ID
+                                    println!("  {} {} {} {} {}",
+                                        name.bold(),
+                                        "locked by".dimmed(),
+                                        info.Who.as_deref().unwrap_or("unknown").yellow(),
+                                        "ID:".dimmed(),
+                                        info.ID.cyan()
                                     );
                                 }
                             }
@@ -341,24 +442,37 @@ async fn main() {
                             .map(str::to_string)
                             .collect();
                         match client.add_webhook(&args.workspace, &args.url, events).await {
-                            Ok(hook) => println!("Webhook registered (ID: {})", hook.id),
+                            Ok(hook) => println!("{} {}",
+                                "Webhook registered — ID:".green(),
+                                hook.id.cyan()
+                            ),
                             Err(e) => die(e),
                         }
                     }
                     cli::RemoteWebhookSubCommand::List(args) => {
                         match client.list_webhooks(&args.workspace).await {
                             Ok(hooks) if hooks.is_empty() => {
-                                println!("No webhooks for '{}'", args.workspace)
+                                println!("{} {}", "No webhooks for".dimmed(), args.workspace.bold());
                             }
                             Ok(hooks) => {
-                                println!("Webhooks for '{}':", args.workspace);
+                                println!("{} {}:",
+                                    "Webhooks for".bold(),
+                                    args.workspace.bold().cyan()
+                                );
                                 for h in hooks {
                                     let events = if h.events.is_empty() {
-                                        "all events".to_string()
+                                        "all events".dimmed().to_string()
                                     } else {
-                                        h.events.join(", ")
+                                        h.events.join(", ").dimmed().to_string()
                                     };
-                                    println!("  {} → {} ({})", h.id, h.url, events);
+                                    println!("  {} {} {} {}{}{}",
+                                        h.id.cyan(),
+                                        "→".dimmed(),
+                                        h.url,
+                                        "(".dimmed(),
+                                        events,
+                                        ")".dimmed()
+                                    );
                                 }
                             }
                             Err(e) => die(e),
@@ -366,7 +480,7 @@ async fn main() {
                     }
                     cli::RemoteWebhookSubCommand::Remove(args) => {
                         match client.remove_webhook(&args.id).await {
-                            Ok(()) => println!("Webhook '{}' removed", args.id),
+                            Ok(()) => println!("{} {}", "Webhook removed:".green(), args.id.cyan()),
                             Err(e) => die(e),
                         }
                     }
@@ -376,7 +490,7 @@ async fn main() {
                     cli::RemoteUserSubCommand::Passwd(args) => {
                         let new_pass = args.password.unwrap_or_else(|| readline("New password: "));
                         match client.change_password(&new_pass).await {
-                            Ok(()) => println!("Password changed successfully"),
+                            Ok(()) => println!("{}", "Password changed successfully".green()),
                             Err(e) => die(e),
                         }
                     }
@@ -395,7 +509,7 @@ pub(crate) fn readline(prompt: &str) -> String {
 }
 
 fn die(msg: String) -> ! {
-    eprintln!("Error: {msg}");
+    eprintln!("{} {msg}", "error:".bold().red());
     std::process::exit(1);
 }
 
