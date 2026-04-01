@@ -13,6 +13,7 @@ mod client;
 mod config;
 pub mod lock;
 pub mod state;
+pub mod tfstate;
 pub mod user;
 pub mod webhook;
 
@@ -145,9 +146,32 @@ async fn main() {
                                 print!("{}", String::from_utf8_lossy(&data));
                             }
                             Ok(data) => {
-                                match serde_json::from_slice::<serde_json::Value>(&data) {
-                                    Ok(v) => println!("{}", serde_json::to_string_pretty(&v).unwrap()),
-                                    Err(_) => print!("{}", String::from_utf8_lossy(&data)),
+                                let s = String::from_utf8_lossy(&data);
+                                match facet_json::from_str::<crate::tfstate::TfState>(&s) {
+                                    Ok(state) => {
+                                        println!("State:            {}", args.name);
+                                        println!("Terraform:        {}", state.terraform_version);
+                                        println!("Serial:           {}", state.serial);
+                                        println!("Lineage:          {}", state.lineage);
+                                        println!("Resources:        {}", state.resources.len());
+                                        if !state.outputs.is_empty() {
+                                            println!("Outputs:");
+                                            let mut keys: Vec<_> = state.outputs.keys().collect();
+                                            keys.sort();
+                                            for k in keys {
+                                                let out = &state.outputs[k];
+                                                let sensitive = if out.sensitive { " (sensitive)" } else { "" };
+                                                println!("  {k}{sensitive}");
+                                            }
+                                        }
+                                    }
+                                    Err(_) => {
+                                        // Not a recognised Terraform state — fall back to pretty JSON
+                                        match serde_json::from_slice::<serde_json::Value>(&data) {
+                                            Ok(v) => println!("{}", serde_json::to_string_pretty(&v).unwrap()),
+                                            Err(_) => print!("{s}"),
+                                        }
+                                    }
                                 }
                             }
                             Err(e) => die(e),
@@ -180,22 +204,29 @@ async fn main() {
                             Err(e) => die(e),
                         };
 
-                        let parse = |raw: &bytes::Bytes| -> Result<facet_value::Value, String> {
-                            let s = String::from_utf8_lossy(raw);
-                            facet_json::from_str(&s).map_err(|e| e.to_string())
-                        };
-
-                        let a = match parse(&from) {
-                            Ok(v) => v,
-                            Err(e) => die(format!("v{} is not valid JSON: {e}", args.from)),
-                        };
-                        let b = match parse(&to) {
-                            Ok(v) => v,
-                            Err(e) => die(format!("v{} is not valid JSON: {e}", args.to)),
-                        };
-
                         use facet_diff::FacetDiff;
-                        println!("{}", a.diff(&b));
+
+                        let from_s = String::from_utf8_lossy(&from);
+                        let to_s = String::from_utf8_lossy(&to);
+
+                        // Try typed diff first for cleaner output; fall back to generic Value diff
+                        let typed_diff = facet_json::from_str::<crate::tfstate::TfState>(&from_s)
+                            .ok()
+                            .zip(facet_json::from_str::<crate::tfstate::TfState>(&to_s).ok());
+
+                        if let Some((a, b)) = typed_diff {
+                            println!("{}", a.diff(&b));
+                        } else {
+                            let a = match facet_json::from_str::<facet_value::Value>(&from_s) {
+                                Ok(v) => v,
+                                Err(e) => die(format!("v{} is not valid JSON: {e}", args.from)),
+                            };
+                            let b = match facet_json::from_str::<facet_value::Value>(&to_s) {
+                                Ok(v) => v,
+                                Err(e) => die(format!("v{} is not valid JSON: {e}", args.to)),
+                            };
+                            println!("{}", a.diff(&b));
+                        }
                     }
                     cli::RemoteStateSubCommand::Unlock(args) => {
                         match client.unlock_state(&args.name).await {
