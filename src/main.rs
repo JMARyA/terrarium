@@ -158,8 +158,13 @@ async fn main() {
                             Ok(versions) if versions.is_empty() => println!("No versions found"),
                             Ok(versions) => {
                                 println!("Versions for '{}':", args.name);
-                                for v in versions {
-                                    println!("  {v}");
+                                let current = versions.iter().max().copied();
+                                for v in &versions {
+                                    if Some(*v) == current {
+                                        println!("  {v} (current)");
+                                    } else {
+                                        println!("  {v}");
+                                    }
                                 }
                             }
                             Err(e) => die(e),
