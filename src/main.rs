@@ -149,24 +149,32 @@ async fn main() {
                                 let s = String::from_utf8_lossy(&data);
                                 match facet_json::from_str::<crate::tfstate::TfState>(&s) {
                                     Ok(state) => {
-                                        println!("State:            {}", args.name);
-                                        println!("Terraform:        {}", state.terraform_version);
-                                        println!("Serial:           {}", state.serial);
-                                        println!("Lineage:          {}", state.lineage);
-                                        println!("Resources:        {}", state.resources.len());
+                                        println!("State:        {}", args.name);
+                                        println!("Terraform:    {}", state.terraform_version);
+                                        println!("Serial:       {}", state.serial);
+                                        println!("Lineage:      {}", state.lineage);
+                                        if !state.resources.is_empty() {
+                                            println!("\nResources ({}):", state.resources.len());
+                                            let mut addrs: Vec<String> = state.resources.iter()
+                                                .map(|r| r.address())
+                                                .collect();
+                                            addrs.sort();
+                                            for addr in &addrs {
+                                                println!("  {addr}");
+                                            }
+                                        }
                                         if !state.outputs.is_empty() {
-                                            println!("Outputs:");
+                                            println!("\nOutputs:");
                                             let mut keys: Vec<_> = state.outputs.keys().collect();
                                             keys.sort();
                                             for k in keys {
                                                 let out = &state.outputs[k];
-                                                let sensitive = if out.sensitive { " (sensitive)" } else { "" };
-                                                println!("  {k}{sensitive}");
+                                                let suffix = if out.sensitive { " (sensitive)" } else { "" };
+                                                println!("  {k}{suffix}");
                                             }
                                         }
                                     }
                                     Err(_) => {
-                                        // Not a recognised Terraform state — fall back to pretty JSON
                                         match serde_json::from_slice::<serde_json::Value>(&data) {
                                             Ok(v) => println!("{}", serde_json::to_string_pretty(&v).unwrap()),
                                             Err(_) => print!("{s}"),
@@ -205,18 +213,70 @@ async fn main() {
                         };
 
                         use facet_diff::FacetDiff;
+                        use std::collections::HashMap as AddrMap;
 
                         let from_s = String::from_utf8_lossy(&from);
                         let to_s = String::from_utf8_lossy(&to);
 
-                        // Try typed diff first for cleaner output; fall back to generic Value diff
-                        let typed_diff = facet_json::from_str::<crate::tfstate::TfState>(&from_s)
-                            .ok()
-                            .zip(facet_json::from_str::<crate::tfstate::TfState>(&to_s).ok());
+                        let a_state = facet_json::from_str::<crate::tfstate::TfState>(&from_s).ok();
+                        let b_state = facet_json::from_str::<crate::tfstate::TfState>(&to_s).ok();
 
-                        if let Some((a, b)) = typed_diff {
-                            println!("{}", a.diff(&b));
+                        if let (Some(a), Some(b)) = (a_state, b_state) {
+                            let a_map: AddrMap<String, &crate::tfstate::TfResource> =
+                                a.resources.iter().map(|r| (r.address(), r)).collect();
+                            let b_map: AddrMap<String, &crate::tfstate::TfResource> =
+                                b.resources.iter().map(|r| (r.address(), r)).collect();
+
+                            let mut addrs: Vec<String> =
+                                a_map.keys().chain(b_map.keys()).cloned().collect();
+                            addrs.sort();
+                            addrs.dedup();
+
+                            println!("Diff: {} v{} → v{}", args.name, args.from, args.to);
+                            let mut any_change = false;
+
+                            if a.serial != b.serial || a.terraform_version != b.terraform_version {
+                                if a.terraform_version != b.terraform_version {
+                                    println!("  terraform: {} → {}", a.terraform_version, b.terraform_version);
+                                }
+                                println!("  serial: {} → {}", a.serial, b.serial);
+                                any_change = true;
+                            }
+
+                            for addr in &addrs {
+                                match (a_map.get(addr), b_map.get(addr)) {
+                                    (None, Some(_)) => {
+                                        println!("  + {addr}");
+                                        any_change = true;
+                                    }
+                                    (Some(_), None) => {
+                                        println!("  - {addr}");
+                                        any_change = true;
+                                    }
+                                    (Some(ra), Some(rb)) if ra.instances != rb.instances => {
+                                        println!("  ~ {addr}");
+                                        for (i, (ia, ib)) in ra.instances.iter().zip(rb.instances.iter()).enumerate() {
+                                            if ia.attributes != ib.attributes {
+                                                if ra.instances.len() > 1 {
+                                                    println!("    [{}]", i);
+                                                }
+                                                let diff = format!("{}", ia.attributes.diff(&ib.attributes));
+                                                for line in diff.lines() {
+                                                    println!("    {line}");
+                                                }
+                                            }
+                                        }
+                                        any_change = true;
+                                    }
+                                    _ => {}
+                                }
+                            }
+
+                            if !any_change {
+                                println!("  (no changes)");
+                            }
                         } else {
+                            // Non-TF state or unparseable — fall back to generic Value diff
                             let a = match facet_json::from_str::<facet_value::Value>(&from_s) {
                                 Ok(v) => v,
                                 Err(e) => die(format!("v{} is not valid JSON: {e}", args.from)),
