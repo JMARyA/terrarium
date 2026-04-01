@@ -83,12 +83,11 @@ impl StateContainer {
     }
 
     pub fn list(&self, prefix: Option<&str>) -> Vec<String> {
-        let search_dir = match prefix {
-            Some(p) => self.dir.join(p.trim_end_matches('/')),
-            None => self.dir.clone(),
-        };
         let mut names = Vec::new();
-        self.collect_states(&search_dir, &mut names);
+        self.collect_states(&self.dir.clone(), &mut names);
+        if let Some(p) = prefix {
+            names.retain(|n| n.starts_with(p));
+        }
         names.sort();
         names
     }
