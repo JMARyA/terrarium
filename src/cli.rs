@@ -13,6 +13,7 @@ pub enum SubCommand {
     Serve(ServeCommand),
     User(UserCommand),
     Remote(RemoteCommand),
+    Login(LoginCommand),
 }
 
 // ── Local server commands ────────────────────────────────────────────────────
@@ -78,6 +79,17 @@ pub struct ChangePassword {
 /// List all users
 #[argh(subcommand, name = "list")]
 pub struct ListUsers {}
+
+// ── Client setup ─────────────────────────────────────────────────────────────
+
+#[derive(FromArgs)]
+/// Save server URL, username, and password to the local config file (chmod 600)
+#[argh(subcommand, name = "login")]
+pub struct LoginCommand {
+    /// config file to write (default: ~/.config/terrarium/config.toml)
+    #[argh(option)]
+    pub config: Option<String>,
+}
 
 // ── Remote client commands ───────────────────────────────────────────────────
 

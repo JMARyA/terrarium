@@ -1,4 +1,4 @@
-use std::io::Write;
+use std::io::Write as _;
 
 use authur::Roles;
 use axum::{
@@ -90,6 +90,26 @@ async fn main() {
                         println!("- {u}");
                     }
                 }
+            }
+        }
+
+        cli::SubCommand::Login(login) => {
+            let config_path = login
+                .config
+                .map(std::path::PathBuf::from)
+                .or_else(|| std::env::var("TERRARIUM_CONFIG").ok().map(std::path::PathBuf::from))
+                .or_else(|| dirs::config_dir().map(|d| d.join("terrarium").join("config.toml")))
+                .unwrap_or_else(|| std::path::PathBuf::from(".terrarium.toml"));
+
+            println!("Logging in — credentials will be saved to {:?}", config_path);
+
+            let url = readline("Server URL (e.g. https://terrarium.example): ");
+            let username = readline("Username: ");
+            let password = rpassword::prompt_password("Password: ").unwrap_or_else(|_| readline("Password: "));
+
+            match config::write(&config_path, &url, &username, &password) {
+                Ok(()) => println!("Saved to {:?} (chmod 600)", config_path),
+                Err(e) => die(e),
             }
         }
 
