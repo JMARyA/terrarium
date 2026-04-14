@@ -10,7 +10,7 @@ steps:
     image: quay.io/buildah/stable
     privileged: true
     environment:
-      REGISTRY_URL: "git.hydrar.de"
+      REGISTRY_URL: "hcr.hydrar.de"
       REGISTRY_USER: "jmarya"
       REGISTRY_PASS:
         from_secret: registry_token
