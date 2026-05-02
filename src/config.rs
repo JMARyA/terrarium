@@ -26,15 +26,14 @@ pub struct ClientConfig {
 pub fn load(explicit_config_path: Option<PathBuf>) -> Result<ClientConfig, String> {
     let file = load_config_file(explicit_config_path)?.unwrap_or_default();
 
-    let url = std::env::var("TERRARIUM_URL")
-        .ok()
-        .or(file.url)
-        .ok_or("Server URL not set. Use TERRARIUM_URL, add 'url' to config file, or run 'terrarium login'.")?;
+    let url = std::env::var("TERRARIUM_URL").ok().or(file.url).ok_or(
+        "Server URL not set. Use TERRARIUM_URL, add 'url' to config file, or run 'terra login'.",
+    )?;
 
     let username = std::env::var("TERRARIUM_USER")
         .ok()
         .or(file.username)
-        .ok_or("Username not set. Use TERRARIUM_USER, add 'username' to config file, or run 'terrarium login'.")?;
+        .ok_or("Username not set. Use TERRARIUM_USER, add 'username' to config file, or run 'terra login'.")?;
 
     let password = std::env::var("TERRARIUM_PASSWORD")
         .ok()

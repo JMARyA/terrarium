@@ -8,6 +8,7 @@ use axum::{
 use colored::Colorize as _;
 
 use crate::{lock::LockContainer, state::StateContainer, webhook::WebhookStore};
+use crate::tofu::TofuBinary;
 
 mod cli;
 mod client;
@@ -17,6 +18,7 @@ pub mod state;
 pub mod tfstate;
 pub mod user;
 pub mod webhook;
+mod tofu;
 
 #[derive(Clone)]
 pub struct AppState {
@@ -24,6 +26,8 @@ pub struct AppState {
     locks: lock::LockContainer,
     users: authur::UserDB<authur::vfs::PhysicalFS>,
     webhooks: webhook::WebhookStore,
+    #[allow(dead_code)]
+    tofu: Option<TofuBinary>,
 }
 
 impl axum::extract::FromRef<AppState> for authur::UserDB<authur::vfs::PhysicalFS> {
@@ -33,33 +37,337 @@ impl axum::extract::FromRef<AppState> for authur::UserDB<authur::vfs::PhysicalFS
 }
 
 /// Returns the data directory, honoring TERRARIUM_DATA env var.
-/// Defaults to "." (relative to process CWD), which is /app inside the container.
-/// Set TERRARIUM_DATA=/ to use old absolute-path volume layout (/state, /users, /locks).
 fn data_dir() -> std::path::PathBuf {
     std::path::PathBuf::from(
         std::env::var("TERRARIUM_DATA").unwrap_or_else(|_| ".".to_string()),
     )
 }
 
+// ── Helper: convert tofu command structs to argument vectors ────────────
+
+fn init_args(cmd: &cli::InitCommand) -> Vec<String> {
+    let mut args = vec!["init".to_string()];
+    if let Some(ref m) = cmd.from_module { args.extend(["-from-module".to_string(), m.clone()]); }
+    if cmd.reconfigure { args.push("-reconfigure".to_string()); }
+    if cmd.migrate_state { args.push("-migrate-state".to_string()); }
+    for bc in &cmd.backend_config { args.extend(["-backend-config".to_string(), bc.clone()]); }
+    if cmd.no_input { args.push("-input=false".to_string()); }
+    if cmd.no_lock { args.push("-lock=false".to_string()); }
+    if let Some(ref lt) = cmd.lock_timeout { args.extend(["-lock-timeout".to_string(), lt.clone()]); }
+    if cmd.upgrade { args.push("-upgrade".to_string()); }
+    if let Some(ref pd) = cmd.plugin_dir { args.extend(["-plugin-dir".to_string(), pd.clone()]); }
+    if let Some(ref lf) = cmd.lockfile { args.extend(["-lockfile".to_string(), lf.clone()]); }
+    if cmd.json { args.push("-json".to_string()); }
+    for v in &cmd.var { args.extend(["-var".to_string(), v.clone()]); }
+    for vf in &cmd.var_file { args.extend(["-var-file".to_string(), vf.clone()]); }
+    args
+}
+
+fn validate_args(cmd: &cli::ValidateCommand) -> Vec<String> {
+    let mut args = vec!["validate".to_string()];
+    if cmd.json { args.push("-json".to_string()); }
+    args
+}
+
+fn plan_args(cmd: &cli::PlanCommand) -> Vec<String> {
+    let mut args = vec!["plan".to_string()];
+    if let Some(ref o) = cmd.out { args.extend(["-out".to_string(), o.clone()]); }
+    if cmd.destroy { args.push("-destroy".to_string()); }
+    if cmd.refresh_only { args.push("-refresh-only".to_string()); }
+    for r in &cmd.replace { args.extend(["-replace".to_string(), r.clone()]); }
+    for t in &cmd.target { args.extend(["-target".to_string(), t.clone()]); }
+    if cmd.no_input { args.push("-input=false".to_string()); }
+    if cmd.no_lock { args.push("-lock=false".to_string()); }
+    if let Some(ref lt) = cmd.lock_timeout { args.extend(["-lock-timeout".to_string(), lt.clone()]); }
+    if let Some(p) = cmd.parallelism { args.push(format!("-parallelism={p}")); }
+    for v in &cmd.var { args.extend(["-var".to_string(), v.clone()]); }
+    for vf in &cmd.var_file { args.extend(["-var-file".to_string(), vf.clone()]); }
+    if cmd.json { args.push("-json".to_string()); }
+    if cmd.no_color { args.push("-no-color".to_string()); }
+    if cmd.no_refresh { args.push("-refresh=false".to_string()); }
+    args
+}
+
+fn apply_args(cmd: &cli::ApplyCommand) -> Vec<String> {
+    let mut args = vec!["apply".to_string()];
+    if cmd.auto_approve { args.push("-auto-approve".to_string()); }
+    if let Some(ref p) = cmd.plan { args.push(p.clone()); }
+    if cmd.no_input { args.push("-input=false".to_string()); }
+    if cmd.no_lock { args.push("-lock=false".to_string()); }
+    if let Some(ref lt) = cmd.lock_timeout { args.extend(["-lock-timeout".to_string(), lt.clone()]); }
+    if let Some(p) = cmd.parallelism { args.push(format!("-parallelism={p}")); }
+    for v in &cmd.var { args.extend(["-var".to_string(), v.clone()]); }
+    for vf in &cmd.var_file { args.extend(["-var-file".to_string(), vf.clone()]); }
+    if cmd.json { args.push("-json".to_string()); }
+    if cmd.no_color { args.push("-no-color".to_string()); }
+    for r in &cmd.replace { args.extend(["-replace".to_string(), r.clone()]); }
+    if cmd.destroy { args.push("-destroy".to_string()); }
+    if cmd.refresh_only { args.push("-refresh-only".to_string()); }
+    args
+}
+
+fn destroy_args(cmd: &cli::DestroyCommand) -> Vec<String> {
+    let mut args = vec!["destroy".to_string()];
+    if cmd.auto_approve { args.push("-auto-approve".to_string()); }
+    for t in &cmd.target { args.extend(["-target".to_string(), t.clone()]); }
+    if cmd.no_input { args.push("-input=false".to_string()); }
+    if cmd.no_lock { args.push("-lock=false".to_string()); }
+    if let Some(ref lt) = cmd.lock_timeout { args.extend(["-lock-timeout".to_string(), lt.clone()]); }
+    if let Some(p) = cmd.parallelism { args.push(format!("-parallelism={p}")); }
+    for v in &cmd.var { args.extend(["-var".to_string(), v.clone()]); }
+    for vf in &cmd.var_file { args.extend(["-var-file".to_string(), vf.clone()]); }
+    if cmd.no_color { args.push("-no-color".to_string()); }
+    args
+}
+
+fn console_args(_cmd: &cli::ConsoleCommand) -> Vec<String> {
+    vec!["console".to_string()]
+}
+
+fn fmt_args(cmd: &cli::FmtCommand) -> Vec<String> {
+    let mut args = vec!["fmt".to_string()];
+    if cmd.check { args.push("-check".to_string()); }
+    if cmd.recursive { args.push("-recursive".to_string()); }
+    if cmd.diff { args.push("-diff".to_string()); }
+    if cmd.stdio { args.push("-stdio".to_string()); }
+    if cmd.list { args.push("-list".to_string()); }
+    if cmd.no_color { args.push("-no-color".to_string()); }
+    for p in &cmd.paths { args.push(p.clone()); }
+    args
+}
+
+fn force_unlock_args(cmd: &cli::ForceUnlockCommand) -> Vec<String> {
+    let mut args = vec!["force-unlock".to_string()];
+    if cmd.force { args.push("-force".to_string()); }
+    args.push(cmd.lock_id.clone());
+    args
+}
+
+fn get_args(cmd: &cli::GetCommand) -> Vec<String> {
+    let mut args = vec!["get".to_string()];
+    if cmd.update { args.push("-update".to_string()); }
+    args
+}
+
+fn graph_args(cmd: &cli::GraphCommand) -> Vec<String> {
+    let mut args = vec!["graph".to_string()];
+    if let Some(ref t) = cmd.type_ { args.extend(["-type".to_string(), t.clone()]); }
+    args
+}
+
+fn import_args(cmd: &cli::ImportCommand) -> Vec<String> {
+    let mut args = vec!["import".to_string()];
+    args.push(cmd.address.clone());
+    args.push(cmd.id.clone());
+    if cmd.no_input { args.push("-input=false".to_string()); }
+    if cmd.no_lock { args.push("-lock=false".to_string()); }
+    if let Some(ref lt) = cmd.lock_timeout { args.extend(["-lock-timeout".to_string(), lt.clone()]); }
+    for v in &cmd.var { args.extend(["-var".to_string(), v.clone()]); }
+    for vf in &cmd.var_file { args.extend(["-var-file".to_string(), vf.clone()]); }
+    args
+}
+
+fn login_args(cmd: &cli::LoginCommand) -> Vec<String> {
+    let mut args = vec!["login".to_string()];
+    if let Some(ref h) = cmd.hostname { args.push(h.clone()); }
+    args
+}
+
+fn logout_args(cmd: &cli::LogoutCommand) -> Vec<String> {
+    let mut args = vec!["logout".to_string()];
+    if let Some(ref h) = cmd.hostname { args.push(h.clone()); }
+    args
+}
+
+fn output_args(cmd: &cli::OutputCommand) -> Vec<String> {
+    let mut args = vec!["output".to_string()];
+    if cmd.json { args.push("-json".to_string()); }
+    if cmd.raw { args.push("-raw".to_string()); }
+    if let Some(ref n) = cmd.name { args.push(n.clone()); }
+    args
+}
+
+fn providers_args(cmd: &cli::ProvidersCommand) -> Vec<String> {
+    let mut args = vec!["providers".to_string()];
+    if cmd.mirror { args.push("-mirror".to_string()); }
+    if cmd.json { args.push("-json".to_string()); }
+    args
+}
+
+fn refresh_args(cmd: &cli::RefreshCommand) -> Vec<String> {
+    let mut args = vec!["refresh".to_string()];
+    for t in &cmd.target { args.extend(["-target".to_string(), t.clone()]); }
+    if cmd.no_input { args.push("-input=false".to_string()); }
+    if cmd.no_lock { args.push("-lock=false".to_string()); }
+    if let Some(ref lt) = cmd.lock_timeout { args.extend(["-lock-timeout".to_string(), lt.clone()]); }
+    for v in &cmd.var { args.extend(["-var".to_string(), v.clone()]); }
+    for vf in &cmd.var_file { args.extend(["-var-file".to_string(), vf.clone()]); }
+    args
+}
+
+fn show_args(cmd: &cli::ShowCommand) -> Vec<String> {
+    let mut args = vec!["show".to_string()];
+    if cmd.json { args.push("-json".to_string()); }
+    if cmd.show_sensitive { args.push("-show-sensitive".to_string()); }
+    if let Some(ref p) = cmd.plan { args.push(p.clone()); }
+    args
+}
+
+fn taint_args(cmd: &cli::TaintCommand) -> Vec<String> {
+    let mut args = vec!["taint".to_string()];
+    if cmd.allow_missing { args.push("-allow-missing".to_string()); }
+    args.push(cmd.address.clone());
+    args
+}
+
+fn untaint_args(cmd: &cli::UntaintCommand) -> Vec<String> {
+    let mut args = vec!["untaint".to_string()];
+    if cmd.allow_missing { args.push("-allow-missing".to_string()); }
+    args.push(cmd.address.clone());
+    args
+}
+
+fn test_args(cmd: &cli::TestCommand) -> Vec<String> {
+    let mut args = vec!["test".to_string()];
+    for f in &cmd.filter { args.extend(["-filter".to_string(), f.clone()]); }
+    if cmd.json { args.push("-json".to_string()); }
+    if cmd.no_color { args.push("-no-color".to_string()); }
+    args
+}
+
+fn version_args(_cmd: &cli::VersionCommand) -> Vec<String> {
+    vec!["version".to_string()]
+}
+
+fn workspace_args(sub: &cli::WorkspaceSubCommand) -> Vec<String> {
+    match sub {
+        cli::WorkspaceSubCommand::List(_) => vec!["workspace".to_string(), "list".to_string()],
+        cli::WorkspaceSubCommand::Show(_) => vec!["workspace".to_string(), "show".to_string()],
+        cli::WorkspaceSubCommand::New(cmd) => {
+            let mut args = vec!["workspace".to_string(), "new".to_string()];
+            if cmd.no_lock { args.push("-lock=false".to_string()); }
+            if let Some(ref lt) = cmd.lock_timeout { args.extend(["-lock-timeout".to_string(), lt.clone()]); }
+            args.push(cmd.name.clone());
+            args
+        }
+        cli::WorkspaceSubCommand::Select(cmd) => {
+            let mut args = vec!["workspace".to_string(), "select".to_string()];
+            if cmd.no_lock { args.push("-lock=false".to_string()); }
+            if let Some(ref lt) = cmd.lock_timeout { args.extend(["-lock-timeout".to_string(), lt.clone()]); }
+            args.push(cmd.name.clone());
+            args
+        }
+        cli::WorkspaceSubCommand::Delete(cmd) => {
+            let mut args = vec!["workspace".to_string(), "delete".to_string()];
+            if cmd.force { args.push("-force".to_string()); }
+            if cmd.no_lock { args.push("-lock=false".to_string()); }
+            if let Some(ref lt) = cmd.lock_timeout { args.extend(["-lock-timeout".to_string(), lt.clone()]); }
+            args.push(cmd.name.clone());
+            args
+        }
+    }
+}
+
+fn state_args(sub: &cli::StateSubCommand) -> Vec<String> {
+    match sub {
+        cli::StateSubCommand::List(cmd) => {
+            let mut args = vec!["state".to_string(), "list".to_string()];
+            if let Some(ref s) = cmd.state { args.extend(["-state".to_string(), s.clone()]); }
+            if let Some(ref id) = cmd.id { args.extend(["-id".to_string(), id.clone()]); }
+            for v in &cmd.var { args.extend(["-var".to_string(), v.clone()]); }
+            for vf in &cmd.var_file { args.extend(["-var-file".to_string(), vf.clone()]); }
+            for a in &cmd.addresses { args.push(a.clone()); }
+            args
+        }
+        cli::StateSubCommand::Show(cmd) => {
+            let mut args = vec!["state".to_string(), "show".to_string()];
+            if let Some(ref s) = cmd.state { args.extend(["-state".to_string(), s.clone()]); }
+            args.push(cmd.address.clone());
+            args
+        }
+        cli::StateSubCommand::MV(cmd) => {
+            let mut args = vec!["state".to_string(), "mv".to_string()];
+            if let Some(ref s) = cmd.state { args.extend(["-state".to_string(), s.clone()]); }
+            if let Some(ref so) = cmd.state_out { args.extend(["-state-out".to_string(), so.clone()]); }
+            if cmd.no_lock { args.push("-lock=false".to_string()); }
+            if let Some(ref lt) = cmd.lock_timeout { args.extend(["-lock-timeout".to_string(), lt.clone()]); }
+            args.push(cmd.source.clone());
+            args.push(cmd.destination.clone());
+            args
+        }
+        cli::StateSubCommand::RM(cmd) => {
+            let mut args = vec!["state".to_string(), "rm".to_string()];
+            if let Some(ref s) = cmd.state { args.extend(["-state".to_string(), s.clone()]); }
+            if cmd.no_lock { args.push("-lock=false".to_string()); }
+            if let Some(ref lt) = cmd.lock_timeout { args.extend(["-lock-timeout".to_string(), lt.clone()]); }
+            for a in &cmd.addresses { args.push(a.clone()); }
+            args
+        }
+        cli::StateSubCommand::Pull(_) => vec!["state".to_string(), "pull".to_string()],
+        cli::StateSubCommand::Push(_) => vec!["state".to_string(), "push".to_string()],
+        cli::StateSubCommand::ReplaceProvider(cmd) => {
+            let mut args = vec!["state".to_string(), "replace-provider".to_string()];
+            if let Some(ref ms) = cmd.mirror_state { args.extend(["-mirror-state".to_string(), ms.clone()]); }
+            if cmd.no_lock { args.push("-lock=false".to_string()); }
+            if let Some(ref lt) = cmd.lock_timeout { args.extend(["-lock-timeout".to_string(), lt.clone()]); }
+            args.push(cmd.old_provider.clone());
+            args.push(cmd.new_provider.clone());
+            args
+        }
+    }
+}
+
+fn metadata_args(_sub: &cli::MetadataSubCommand) -> Vec<String> {
+    vec!["metadata".to_string()]
+}
+
+// ── Main dispatch ────────────────────────────────────────────────────────
+
 #[tokio::main]
 async fn main() {
     tracing_subscriber::fmt::init();
 
     let cli: cli::Cli = argh::from_env();
+    let tofu_binary = tofu::TofuBinary::detect().ok();
 
     match cli.subcommand {
-        cli::SubCommand::Serve(_) => serve().await,
+        // ── Tofu workflow commands ──
+        cli::SubCommand::Init(cmd) => run_tofu(tofu_binary, init_args(&cmd)),
+        cli::SubCommand::Validate(cmd) => run_tofu(tofu_binary, validate_args(&cmd)),
+        cli::SubCommand::Plan(cmd) => run_tofu(tofu_binary, plan_args(&cmd)),
+        cli::SubCommand::Apply(cmd) => run_tofu(tofu_binary, apply_args(&cmd)),
+        cli::SubCommand::Destroy(cmd) => run_tofu(tofu_binary, destroy_args(&cmd)),
+
+        // ── Tofu utility commands ──
+        cli::SubCommand::Console(cmd) => run_tofu(tofu_binary, console_args(&cmd)),
+        cli::SubCommand::Fmt(cmd) => run_tofu(tofu_binary, fmt_args(&cmd)),
+        cli::SubCommand::ForceUnlock(cmd) => run_tofu(tofu_binary, force_unlock_args(&cmd)),
+        cli::SubCommand::Get(cmd) => run_tofu(tofu_binary, get_args(&cmd)),
+        cli::SubCommand::Graph(cmd) => run_tofu(tofu_binary, graph_args(&cmd)),
+        cli::SubCommand::Import(cmd) => run_tofu(tofu_binary, import_args(&cmd)),
+        cli::SubCommand::Login(cmd) => run_tofu(tofu_binary, login_args(&cmd)),
+        cli::SubCommand::Logout(cmd) => run_tofu(tofu_binary, logout_args(&cmd)),
+        cli::SubCommand::Output(cmd) => run_tofu(tofu_binary, output_args(&cmd)),
+        cli::SubCommand::Providers(cmd) => run_tofu(tofu_binary, providers_args(&cmd)),
+        cli::SubCommand::Refresh(cmd) => run_tofu(tofu_binary, refresh_args(&cmd)),
+        cli::SubCommand::Show(cmd) => run_tofu(tofu_binary, show_args(&cmd)),
+        cli::SubCommand::Taint(cmd) => run_tofu(tofu_binary, taint_args(&cmd)),
+        cli::SubCommand::Untaint(cmd) => run_tofu(tofu_binary, untaint_args(&cmd)),
+        cli::SubCommand::Test(cmd) => run_tofu(tofu_binary, test_args(&cmd)),
+        cli::SubCommand::Version(cmd) => run_tofu(tofu_binary, version_args(&cmd)),
+        cli::SubCommand::Workspace(cmd) => run_tofu(tofu_binary, workspace_args(&cmd.subcommand)),
+        cli::SubCommand::State(cmd) => run_tofu(tofu_binary, state_args(&cmd.subcommand)),
+        cli::SubCommand::Metadata(cmd) => run_tofu(tofu_binary, metadata_args(&cmd.subcommand)),
+
+        // ── Native terrarium commands ──
+        cli::SubCommand::Serve(_) => serve(tofu_binary).await,
 
         cli::SubCommand::User(user_command) => {
             let users = authur::UserDB::new(data_dir().join("users").to_str().unwrap()).await;
-
             match user_command.subcommand {
                 cli::UserCommands::Add(args) => {
                     let pass = args.password.unwrap_or_else(|| readline("Password: "));
-                    users
-                        .create(args.username, &pass, Roles::default())
-                        .await
-                        .unwrap();
+                    users.create(args.username, &pass, Roles::default()).await.unwrap();
                 }
                 cli::UserCommands::ChangePassword(args) => {
                     if users.find(&args.username).await.is_some() {
@@ -75,7 +383,6 @@ async fn main() {
                 }
                 cli::UserCommands::Delete(args) => {
                     if users.find(&args.username).await.is_some() {
-                        // TODO: implement user deletion in authur upstream, then replace this
                         let path = data_dir().join("users").join("users").join(&args.username);
                         match std::fs::remove_file(&path) {
                             Ok(()) => println!("User {} deleted", args.username.bold()),
@@ -95,7 +402,7 @@ async fn main() {
             }
         }
 
-        cli::SubCommand::Login(login) => {
+        cli::SubCommand::TerrariumLogin(login) => {
             let config_path = login
                 .config
                 .map(std::path::PathBuf::from)
@@ -104,8 +411,7 @@ async fn main() {
                 .unwrap_or_else(|| std::path::PathBuf::from(".terrarium.toml"));
 
             println!("Logging in — credentials will be saved to {:?}", config_path);
-
-            let url = readline("Server URL (e.g. https://terrarium.example): ");
+            let url = readline("Server URL (e.g. https://terra.example): ");
             let username = readline("Username: ");
             let password = rpassword::prompt_password("Password: ").unwrap_or_else(|_| readline("Password: "));
 
@@ -116,391 +422,33 @@ async fn main() {
         }
 
         cli::SubCommand::Remote(remote) => {
-            let config = config::load(remote.config.map(std::path::PathBuf::from));
-            let config = match config {
-                Ok(c) => c,
-                Err(e) => {
-                    eprintln!("{} {e}", "configuration error:".bold().red());
-                    std::process::exit(1);
-                }
-            };
-            let client =
-                client::TerrariumClient::new(config.url, config.username, config.password);
-
-            match remote.subcommand {
-                cli::RemoteSubCommand::State(state_cmd) => match state_cmd.subcommand {
-                    cli::RemoteStateSubCommand::List(args) => {
-                        match client.list_states(args.prefix.as_deref(), args.archived).await {
-                            Ok(states) if states.is_empty() => {
-                                let msg = if args.archived {
-                                    "No archived states found"
-                                } else {
-                                    "No states found"
-                                };
-                                println!("{}", msg.dimmed());
-                            }
-                            Ok(states) => {
-                                let header = if args.archived {
-                                    "Archived states:".bold().yellow().to_string()
-                                } else {
-                                    "States:".bold().to_string()
-                                };
-                                println!("{header}");
-                                for s in states {
-                                    println!("  {s}");
-                                }
-                            }
-                            Err(e) => die(e),
-                        }
-                    }
-                    cli::RemoteStateSubCommand::Get(args) => {
-                        match client.get_state(&args.name, args.version).await {
-                            Ok(data) if args.raw => {
-                                print!("{}", String::from_utf8_lossy(&data));
-                            }
-                            Ok(data) => {
-                                let s = String::from_utf8_lossy(&data);
-                                match facet_json::from_str::<crate::tfstate::TfState>(&s) {
-                                    Ok(state) => {
-                                        let version_label = args.version
-                                            .map(|v| format!(" v{v}"))
-                                            .unwrap_or_default();
-                                        println!("{} {}{}",
-                                            "state    ".dimmed(),
-                                            args.name.bold(),
-                                            version_label.dimmed()
-                                        );
-                                        println!("{} {}",
-                                            "terraform".dimmed(),
-                                            state.terraform_version.cyan()
-                                        );
-                                        println!("{} {}",
-                                            "serial   ".dimmed(),
-                                            state.serial.to_string().cyan()
-                                        );
-                                        println!("{} {}",
-                                            "lineage  ".dimmed(),
-                                            state.lineage.dimmed()
-                                        );
-
-                                        if !state.resources.is_empty() {
-                                            // Group by resource type
-                                            let mut by_type: std::collections::BTreeMap<String, Vec<String>> =
-                                                Default::default();
-                                            for r in &state.resources {
-                                                let type_key = if r.mode == "data" {
-                                                    format!("data.{}", r.type_)
-                                                } else {
-                                                    r.type_.clone()
-                                                };
-                                                let instance_name = match &r.module {
-                                                    Some(m) => format!("{}.{}", m, r.name),
-                                                    None => r.name.clone(),
-                                                };
-                                                by_type.entry(type_key).or_default().push(instance_name);
-                                            }
-
-                                            println!("\n{} {}:",
-                                                "resources".bold(),
-                                                state.resources.len().to_string().cyan()
-                                            );
-                                            for (type_name, names) in &by_type {
-                                                if names.len() > 1 {
-                                                    println!("  {} {}",
-                                                        type_name.bold().cyan(),
-                                                        format!("({})", names.len()).dimmed()
-                                                    );
-                                                } else {
-                                                    println!("  {}", type_name.bold().cyan());
-                                                }
-                                                for name in names {
-                                                    println!("    {name}");
-                                                }
-                                            }
-                                        }
-
-                                        if !state.outputs.is_empty() {
-                                            println!("\n{}:", "outputs".bold());
-                                            let mut keys: Vec<_> = state.outputs.keys().collect();
-                                            keys.sort();
-                                            for k in keys {
-                                                let out = &state.outputs[k];
-                                                if out.sensitive {
-                                                    println!("  {} {}",
-                                                        k,
-                                                        "(sensitive)".yellow().dimmed()
-                                                    );
-                                                } else {
-                                                    println!("  {k}");
-                                                }
-                                            }
-                                        }
-                                    }
-                                    Err(_) => {
-                                        match serde_json::from_slice::<serde_json::Value>(&data) {
-                                            Ok(v) => println!("{}", serde_json::to_string_pretty(&v).unwrap()),
-                                            Err(_) => print!("{s}"),
-                                        }
-                                    }
-                                }
-                            }
-                            Err(e) => die(e),
-                        }
-                    }
-                    cli::RemoteStateSubCommand::Versions(args) => {
-                        match client.list_versions(&args.name).await {
-                            Ok(versions) if versions.is_empty() => {
-                                println!("{}", "No versions found".dimmed());
-                            }
-                            Ok(versions) => {
-                                println!("{} {}:",
-                                    "Versions for".dimmed(),
-                                    args.name.bold()
-                                );
-                                let current = versions.iter().max().copied();
-                                for v in &versions {
-                                    if Some(*v) == current {
-                                        println!("  {} {}",
-                                            v.to_string().cyan(),
-                                            "(current)".green().bold()
-                                        );
-                                    } else {
-                                        println!("  {}", v.to_string().dimmed());
-                                    }
-                                }
-                            }
-                            Err(e) => die(e),
-                        }
-                    }
-                    cli::RemoteStateSubCommand::Diff(args) => {
-                        let from = match client.get_state(&args.name, Some(args.from)).await {
-                            Ok(d) => d,
-                            Err(e) => die(e),
-                        };
-                        let to = match client.get_state(&args.name, Some(args.to)).await {
-                            Ok(d) => d,
-                            Err(e) => die(e),
-                        };
-
-                        use facet_diff::FacetDiff;
-                        use std::collections::HashMap as AddrMap;
-
-                        let from_s = String::from_utf8_lossy(&from);
-                        let to_s = String::from_utf8_lossy(&to);
-
-                        let a_state = facet_json::from_str::<crate::tfstate::TfState>(&from_s).ok();
-                        let b_state = facet_json::from_str::<crate::tfstate::TfState>(&to_s).ok();
-
-                        if let (Some(a), Some(b)) = (a_state, b_state) {
-                            let a_map: AddrMap<String, &crate::tfstate::TfResource> =
-                                a.resources.iter().map(|r| (r.address(), r)).collect();
-                            let b_map: AddrMap<String, &crate::tfstate::TfResource> =
-                                b.resources.iter().map(|r| (r.address(), r)).collect();
-
-                            let mut addrs: Vec<String> =
-                                a_map.keys().chain(b_map.keys()).cloned().collect();
-                            addrs.sort();
-                            addrs.dedup();
-
-                            println!("{} {} {} {} {}",
-                                "diff".bold(),
-                                args.name.bold(),
-                                format!("v{}", args.from).cyan(),
-                                "→".dimmed(),
-                                format!("v{}", args.to).cyan(),
-                            );
-                            let mut any_change = false;
-
-                            if a.serial != b.serial || a.terraform_version != b.terraform_version {
-                                if a.terraform_version != b.terraform_version {
-                                    println!("  {} {} {} {}",
-                                        "terraform:".dimmed(),
-                                        a.terraform_version.yellow(),
-                                        "→".dimmed(),
-                                        b.terraform_version.yellow()
-                                    );
-                                }
-                                println!("  {} {} {} {}",
-                                    "serial:".dimmed(),
-                                    a.serial.to_string().yellow(),
-                                    "→".dimmed(),
-                                    b.serial.to_string().yellow()
-                                );
-                                any_change = true;
-                            }
-
-                            for addr in &addrs {
-                                match (a_map.get(addr), b_map.get(addr)) {
-                                    (None, Some(_)) => {
-                                        println!("  {} {}", "+".bold().green(), addr.green());
-                                        any_change = true;
-                                    }
-                                    (Some(_), None) => {
-                                        println!("  {} {}", "-".bold().red(), addr.red());
-                                        any_change = true;
-                                    }
-                                    (Some(ra), Some(rb)) if ra.instances != rb.instances => {
-                                        println!("  {} {}", "~".bold().yellow(), addr.yellow());
-                                        for (i, (ia, ib)) in ra.instances.iter().zip(rb.instances.iter()).enumerate() {
-                                            if ia.attributes != ib.attributes {
-                                                if ra.instances.len() > 1 {
-                                                    println!("    {}", format!("[{i}]").dimmed());
-                                                }
-                                                let diff = format!("{}", ia.attributes.diff(&ib.attributes));
-                                                for line in diff.lines() {
-                                                    println!("    {line}");
-                                                }
-                                            }
-                                        }
-                                        any_change = true;
-                                    }
-                                    _ => {}
-                                }
-                            }
-
-                            if !any_change {
-                                println!("  {}", "(no changes)".dimmed());
-                            }
-                        } else {
-                            // Non-TF state or unparseable — fall back to generic Value diff
-                            let a = match facet_json::from_str::<facet_value::Value>(&from_s) {
-                                Ok(v) => v,
-                                Err(e) => die(format!("v{} is not valid JSON: {e}", args.from)),
-                            };
-                            let b = match facet_json::from_str::<facet_value::Value>(&to_s) {
-                                Ok(v) => v,
-                                Err(e) => die(format!("v{} is not valid JSON: {e}", args.to)),
-                            };
-                            println!("{}", a.diff(&b));
-                        }
-                    }
-                    cli::RemoteStateSubCommand::Unlock(args) => {
-                        match client.unlock_state(&args.name).await {
-                            Ok(info) => println!("{} {} {} {}",
-                                "Unlocked".green(),
-                                args.name.bold(),
-                                "— lock ID:".dimmed(),
-                                info.ID.cyan()
-                            ),
-                            Err(e) => die(e),
-                        }
-                    }
-                    cli::RemoteStateSubCommand::Archive(args) => {
-                        match client.archive_state(&args.name).await {
-                            Ok(()) => println!("{} {} {}",
-                                "Archived".yellow(),
-                                args.name.bold(),
-                                "— now read-only".dimmed()
-                            ),
-                            Err(e) => die(e),
-                        }
-                    }
-                    cli::RemoteStateSubCommand::Unarchive(args) => {
-                        match client.unarchive_state(&args.name).await {
-                            Ok(()) => println!("{} {} {}",
-                                "Unarchived".green(),
-                                args.name.bold(),
-                                "— writes re-enabled".dimmed()
-                            ),
-                            Err(e) => die(e),
-                        }
-                    }
-                },
-
-                cli::RemoteSubCommand::Lock(lock_cmd) => match lock_cmd.subcommand {
-                    cli::RemoteLockSubCommand::List(_) => {
-                        match client.list_locks().await {
-                            Ok(locks) if locks.is_empty() => {
-                                println!("{}", "No active locks".dimmed());
-                            }
-                            Ok(locks) => {
-                                println!("{}:", "Active locks".bold());
-                                let mut entries: Vec<_> = locks.into_iter().collect();
-                                entries.sort_by(|a, b| a.0.cmp(&b.0));
-                                for (name, info) in entries {
-                                    println!("  {} {} {} {} {}",
-                                        name.bold(),
-                                        "locked by".dimmed(),
-                                        info.Who.as_deref().unwrap_or("unknown").yellow(),
-                                        "ID:".dimmed(),
-                                        info.ID.cyan()
-                                    );
-                                }
-                            }
-                            Err(e) => die(e),
-                        }
-                    }
-                },
-
-                cli::RemoteSubCommand::Webhook(webhook_cmd) => match webhook_cmd.subcommand {
-                    cli::RemoteWebhookSubCommand::Add(args) => {
-                        let events = args
-                            .events
-                            .unwrap_or_default()
-                            .split(',')
-                            .filter(|s| !s.is_empty())
-                            .map(str::to_string)
-                            .collect();
-                        match client.add_webhook(&args.workspace, &args.url, events).await {
-                            Ok(hook) => println!("{} {}",
-                                "Webhook registered — ID:".green(),
-                                hook.id.cyan()
-                            ),
-                            Err(e) => die(e),
-                        }
-                    }
-                    cli::RemoteWebhookSubCommand::List(args) => {
-                        match client.list_webhooks(&args.workspace).await {
-                            Ok(hooks) if hooks.is_empty() => {
-                                println!("{} {}", "No webhooks for".dimmed(), args.workspace.bold());
-                            }
-                            Ok(hooks) => {
-                                println!("{} {}:",
-                                    "Webhooks for".bold(),
-                                    args.workspace.bold().cyan()
-                                );
-                                for h in hooks {
-                                    let events = if h.events.is_empty() {
-                                        "all events".dimmed().to_string()
-                                    } else {
-                                        h.events.join(", ").dimmed().to_string()
-                                    };
-                                    println!("  {} {} {} {}{}{}",
-                                        h.id.cyan(),
-                                        "→".dimmed(),
-                                        h.url,
-                                        "(".dimmed(),
-                                        events,
-                                        ")".dimmed()
-                                    );
-                                }
-                            }
-                            Err(e) => die(e),
-                        }
-                    }
-                    cli::RemoteWebhookSubCommand::Remove(args) => {
-                        match client.remove_webhook(&args.id).await {
-                            Ok(()) => println!("{} {}", "Webhook removed:".green(), args.id.cyan()),
-                            Err(e) => die(e),
-                        }
-                    }
-                },
-
-                cli::RemoteSubCommand::User(user_cmd) => match user_cmd.subcommand {
-                    cli::RemoteUserSubCommand::Passwd(args) => {
-                        let new_pass = args.password.unwrap_or_else(|| readline("New password: "));
-                        match client.change_password(&new_pass).await {
-                            Ok(()) => println!("{}", "Password changed successfully".green()),
-                            Err(e) => die(e),
-                        }
-                    }
-                },
-            }
+            handle_remote_command(remote).await;
         }
     }
 }
 
-pub(crate) fn readline(prompt: &str) -> String {
+// ── Helper functions ─────────────────────────────────────────────────────
+
+fn run_tofu(tofu_binary: Option<TofuBinary>, args: Vec<String>) -> ! {
+    let tofu = match tofu_binary {
+        Some(t) => t,
+        None => {
+            eprintln!("{} OpenTofu binary not found in PATH.", "error:".bold().red());
+            eprintln!("Install it from https://opentofu.org");
+            std::process::exit(1);
+        }
+    };
+
+    let status = tofu.run(&args.iter().map(|s| s.as_str()).collect::<Vec<&str>>())
+        .unwrap_or_else(|e| {
+            eprintln!("{} Failed to execute tofu: {e}", "error:".bold().red());
+            std::process::exit(1);
+        });
+
+    std::process::exit(status.code().unwrap_or(1));
+}
+
+fn readline(prompt: &str) -> String {
     print!("{}", prompt);
     std::io::stdout().flush().unwrap();
     let mut input = String::new();
@@ -513,13 +461,14 @@ fn die(msg: String) -> ! {
     std::process::exit(1);
 }
 
-async fn serve() {
+async fn serve(tofu_binary: Option<TofuBinary>) {
     let data = data_dir();
     let state = AppState {
         state: StateContainer::new(data.join("state"), data.join("versions")),
         locks: LockContainer::new(data.join("locks")),
         users: authur::UserDB::new(data.join("users").to_str().unwrap()).await,
         webhooks: WebhookStore::new(data.join("webhooks.json")),
+        tofu: tofu_binary,
     };
 
     let app = Router::new()
@@ -546,6 +495,276 @@ async fn serve() {
         .await
         .expect("Failed to bind to port 8080");
 
-    tracing::info!("🌱 Starting terrarium server at :8080");
+    tracing::info!("🌱 Starting terra server at :8080");
     axum::serve(listener, app).await.unwrap();
+}
+
+async fn handle_remote_command(remote: cli::RemoteCommand) {
+    let config = config::load(remote.config.map(std::path::PathBuf::from));
+    let config = match config {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("{} {e}", "configuration error:".bold().red());
+            std::process::exit(1);
+        }
+    };
+    let client = client::TerrariumClient::new(config.url, config.username, config.password);
+
+    match remote.subcommand {
+        cli::RemoteSubCommand::State(state_cmd) => match state_cmd.subcommand {
+            cli::RemoteStateSubCommand::List(args) => {
+                match client.list_states(args.prefix.as_deref(), args.archived).await {
+                    Ok(states) if states.is_empty() => {
+                        let msg = if args.archived { "No archived states found" } else { "No states found" };
+                        println!("{}", msg.dimmed());
+                    }
+                    Ok(states) => {
+                        let header = if args.archived {
+                            "Archived states:".bold().yellow().to_string()
+                        } else {
+                            "States:".bold().to_string()
+                        };
+                        println!("{header}");
+                        for s in states {
+                            println!("  {s}");
+                        }
+                    }
+                    Err(e) => die(e),
+                }
+            }
+            cli::RemoteStateSubCommand::Get(args) => {
+                match client.get_state(&args.name, args.version).await {
+                    Ok(data) if args.raw => print!("{}", String::from_utf8_lossy(&data)),
+                    Ok(data) => {
+                        let s = String::from_utf8_lossy(&data);
+                        match facet_json::from_str::<crate::tfstate::TfState>(&s) {
+                            Ok(state) => {
+                                let version_label = args.version.map(|v| format!(" v{v}")).unwrap_or_default();
+                                println!("{} {}{}", "state    ".dimmed(), args.name.bold(), version_label.dimmed());
+                                println!("{} {}", "terraform".dimmed(), state.terraform_version.cyan());
+                                println!("{} {}", "serial   ".dimmed(), state.serial.to_string().cyan());
+                                println!("{} {}", "lineage  ".dimmed(), state.lineage.dimmed());
+
+                                if !state.resources.is_empty() {
+                                    let mut by_type: std::collections::BTreeMap<String, Vec<String>> = Default::default();
+                                    for r in &state.resources {
+                                        let type_key = if r.mode == "data" { format!("data.{}", r.type_) } else { r.type_.clone() };
+                                        let instance_name = match &r.module {
+                                            Some(m) => format!("{}.{}", m, r.name),
+                                            None => r.name.clone(),
+                                        };
+                                        by_type.entry(type_key).or_default().push(instance_name);
+                                    }
+                                    println!("\n{} {}:", "resources".bold(), state.resources.len().to_string().cyan());
+                                    for (type_name, names) in &by_type {
+                                        if names.len() > 1 {
+                                            println!("  {} {}", type_name.bold().cyan(), format!("({})", names.len()).dimmed());
+                                        } else {
+                                            println!("  {}", type_name.bold().cyan());
+                                        }
+                                        for name in names {
+                                            println!("    {name}");
+                                        }
+                                    }
+                                }
+                                if !state.outputs.is_empty() {
+                                    println!("\n{}:", "outputs".bold());
+                                    let mut keys: Vec<_> = state.outputs.keys().collect();
+                                    keys.sort();
+                                    for k in keys {
+                                        let out = &state.outputs[k];
+                                        if out.sensitive {
+                                            println!("  {} {}", k, "(sensitive)".yellow().dimmed());
+                                        } else {
+                                            println!("  {k}");
+                                        }
+                                    }
+                                }
+                            }
+                            Err(_) => {
+                                match serde_json::from_slice::<serde_json::Value>(&data) {
+                                    Ok(v) => println!("{}", serde_json::to_string_pretty(&v).unwrap()),
+                                    Err(_) => print!("{s}"),
+                                }
+                            }
+                        }
+                    }
+                    Err(e) => die(e),
+                }
+            }
+            cli::RemoteStateSubCommand::Versions(args) => {
+                match client.list_versions(&args.name).await {
+                    Ok(versions) if versions.is_empty() => println!("{}", "No versions found".dimmed()),
+                    Ok(versions) => {
+                        println!("{} {}:", "Versions for".dimmed(), args.name.bold());
+                        let current = versions.iter().max().copied();
+                        for v in &versions {
+                            if Some(*v) == current {
+                                println!("  {} {}", v.to_string().cyan(), "(current)".green().bold());
+                            } else {
+                                println!("  {}", v.to_string().dimmed());
+                            }
+                        }
+                    }
+                    Err(e) => die(e),
+                }
+            }
+            cli::RemoteStateSubCommand::Diff(args) => {
+                let from = match client.get_state(&args.name, Some(args.from)).await {
+                    Ok(d) => d,
+                    Err(e) => die(e),
+                };
+                let to = match client.get_state(&args.name, Some(args.to)).await {
+                    Ok(d) => d,
+                    Err(e) => die(e),
+                };
+
+                use facet_diff::FacetDiff;
+                use std::collections::HashMap as AddrMap;
+
+                let from_s = String::from_utf8_lossy(&from);
+                let to_s = String::from_utf8_lossy(&to);
+
+                let a_state = facet_json::from_str::<crate::tfstate::TfState>(&from_s).ok();
+                let b_state = facet_json::from_str::<crate::tfstate::TfState>(&to_s).ok();
+
+                if let (Some(a), Some(b)) = (a_state, b_state) {
+                    let a_map: AddrMap<String, &crate::tfstate::TfResource> = a.resources.iter().map(|r| (r.address(), r)).collect();
+                    let b_map: AddrMap<String, &crate::tfstate::TfResource> = b.resources.iter().map(|r| (r.address(), r)).collect();
+
+                    let mut addrs: Vec<String> = a_map.keys().chain(b_map.keys()).cloned().collect();
+                    addrs.sort();
+                    addrs.dedup();
+
+                    println!("{} {} {} {} {}", "diff".bold(), args.name.bold(), format!("v{}", args.from).cyan(), "→".dimmed(), format!("v{}", args.to).cyan());
+                    let mut any_change = false;
+
+                    if a.serial != b.serial || a.terraform_version != b.terraform_version {
+                        if a.terraform_version != b.terraform_version {
+                            println!("  {} {} {} {}", "terraform:".dimmed(), a.terraform_version.yellow(), "→".dimmed(), b.terraform_version.yellow());
+                        }
+                        println!("  {} {} {} {}", "serial:".dimmed(), a.serial.to_string().yellow(), "→".dimmed(), b.serial.to_string().yellow());
+                        any_change = true;
+                    }
+
+                    for addr in &addrs {
+                        match (a_map.get(addr), b_map.get(addr)) {
+                            (None, Some(_)) => {
+                                println!("  {} {}", "+".bold().green(), addr.green());
+                                any_change = true;
+                            }
+                            (Some(_), None) => {
+                                println!("  {} {}", "-".bold().red(), addr.red());
+                                any_change = true;
+                            }
+                            (Some(ra), Some(rb)) if ra.instances != rb.instances => {
+                                println!("  {} {}", "~".bold().yellow(), addr.yellow());
+                                for (i, (ia, ib)) in ra.instances.iter().zip(rb.instances.iter()).enumerate() {
+                                    if ia.attributes != ib.attributes {
+                                        if ra.instances.len() > 1 {
+                                            println!("    {}", format!("[{i}]").dimmed());
+                                        }
+                                        let diff = format!("{}", ia.attributes.diff(&ib.attributes));
+                                        for line in diff.lines() {
+                                            println!("    {line}");
+                                        }
+                                    }
+                                }
+                                any_change = true;
+                            }
+                            _ => {}
+                        }
+                    }
+                    if !any_change {
+                        println!("  {}", "(no changes)".dimmed());
+                    }
+                } else {
+                    let a = match facet_json::from_str::<facet_value::Value>(&from_s) {
+                        Ok(v) => v,
+                        Err(e) => die(format!("v{} is not valid JSON: {e}", args.from)),
+                    };
+                    let b = match facet_json::from_str::<facet_value::Value>(&to_s) {
+                        Ok(v) => v,
+                        Err(e) => die(format!("v{} is not valid JSON: {e}", args.to)),
+                    };
+                    println!("{}", a.diff(&b));
+                }
+            }
+            cli::RemoteStateSubCommand::Unlock(args) => {
+                match client.unlock_state(&args.name).await {
+                        Ok(info) => println!("{} {} {} {}", "Unlocked".green(), args.name.bold(), "— lock ID:".dimmed(), info.ID.cyan()),
+                    Err(e) => die(e),
+                }
+            }
+            cli::RemoteStateSubCommand::Archive(args) => {
+                match client.archive_state(&args.name).await {
+                    Ok(()) => println!("{} {} {}", "Archived".yellow(), args.name.bold(), "— now read-only".dimmed()),
+                    Err(e) => die(e),
+                }
+            }
+            cli::RemoteStateSubCommand::Unarchive(args) => {
+                match client.unarchive_state(&args.name).await {
+                    Ok(()) => println!("{} {} {}", "Unarchived".green(), args.name.bold(), "— writes re-enabled".dimmed()),
+                    Err(e) => die(e),
+                }
+            }
+        },
+        cli::RemoteSubCommand::Lock(lock_cmd) => match lock_cmd.subcommand {
+            cli::RemoteLockSubCommand::List(_) => {
+                match client.list_locks().await {
+                    Ok(locks) if locks.is_empty() => println!("{}", "No active locks".dimmed()),
+                    Ok(locks) => {
+                        println!("{}:", "Active locks".bold());
+                        let mut entries: Vec<_> = locks.into_iter().collect();
+                        entries.sort_by(|a, b| a.0.cmp(&b.0));
+                        for (name, info) in entries {
+                            println!("  {} {} {} {} {}", name.bold(), "locked by".dimmed(), info.Who.as_deref().unwrap_or("unknown").yellow(), "ID:".dimmed(), info.ID.cyan());
+                        }
+                    }
+                    Err(e) => die(e),
+                }
+            }
+        },
+        cli::RemoteSubCommand::Webhook(webhook_cmd) => match webhook_cmd.subcommand {
+            cli::RemoteWebhookSubCommand::Add(args) => {
+                let events = args.events.unwrap_or_default().split(',').filter(|s| !s.is_empty()).map(str::to_string).collect();
+                match client.add_webhook(&args.workspace, &args.url, events).await {
+                    Ok(hook) => println!("{} {}", "Webhook registered — ID:".green(), hook.id.cyan()),
+                    Err(e) => die(e),
+                }
+            }
+            cli::RemoteWebhookSubCommand::List(args) => {
+                match client.list_webhooks(&args.workspace).await {
+                    Ok(hooks) if hooks.is_empty() => println!("{} {}", "No webhooks for".dimmed(), args.workspace.bold()),
+                    Ok(hooks) => {
+                        println!("{} {}:", "Webhooks for".bold(), args.workspace.bold().cyan());
+                        for h in hooks {
+                            let events = if h.events.is_empty() {
+                                "all events".dimmed().to_string()
+                            } else {
+                                h.events.join(", ").dimmed().to_string()
+                            };
+                            println!("  {} {} {} {}{}{}", h.id.cyan(), "→".dimmed(), h.url, "(".dimmed(), events, ")".dimmed());
+                        }
+                    }
+                    Err(e) => die(e),
+                }
+            }
+            cli::RemoteWebhookSubCommand::Remove(args) => {
+                match client.remove_webhook(&args.id).await {
+                    Ok(()) => println!("{} {}", "Webhook removed:".green(), args.id.cyan()),
+                    Err(e) => die(e),
+                }
+            }
+        },
+        cli::RemoteSubCommand::User(user_cmd) => match user_cmd.subcommand {
+            cli::RemoteUserSubCommand::Passwd(args) => {
+                let new_pass = args.password.unwrap_or_else(|| readline("New password: "));
+                match client.change_password(&new_pass).await {
+                    Ok(()) => println!("{}", "Password changed successfully".green()),
+                    Err(e) => die(e),
+                }
+            }
+        },
+    }
 }

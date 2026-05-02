@@ -2,7 +2,7 @@
 
 > **A safe enclosure for your Terraform state.** 🦎🪴
 
-**Terrarium** is a small, boring, correct **Terraform HTTP state backend**.
+**Terrarium** is a small, boring, correct **Terraform HTTP state backend** — shipped as `terra`, a unified CLI that also wraps OpenTofu.
 
 It stores Terraform state as an opaque blob, provides strict locking, tracks full version history, and stays completely out of your way.
 
@@ -14,15 +14,34 @@ Terraform state is critical, shared, and easy to corrupt. Terrarium exists becau
 
 ## Features
 
+- 🔀 Full OpenTofu CLI pass-through — `terra plan`, `terra apply`, etc. delegate straight to `tofu`
 - 🌱 Terraform-compatible HTTP backend (lock/unlock/push/pull)
 - 🔒 Strict, explicit state locking
 - 📜 Full version history — every push is versioned, diffs included
 - 📦 Workspace archival — mark a workspace read-only permanently
 - 🪝 Webhooks — event-driven integration per workspace
 - 🗂 Path-prefix namespacing — `infra/prod`, `apps/backend/staging`
-- 🦎 Single static binary
+- 🦎 Single static binary (`terra`)
 - 🧱 Cloud-agnostic
 - 🔐 HTTP Basic Auth
+
+---
+
+## OpenTofu CLI
+
+`terra` wraps `tofu` transparently — all OpenTofu subcommands are available as-is, with the same flags:
+
+```shell
+terra init
+terra plan --var-file=prod.tfvars
+terra apply --auto-approve
+terra destroy
+terra workspace list
+terra state list
+# ... and all other tofu subcommands
+```
+
+OpenTofu must be installed and available in `$PATH`.
 
 ---
 
@@ -41,7 +60,7 @@ services:
     environment:
       - "RUST_LOG=info"
       - "TERRARIUM_DATA=/app"
-    command: "/bin/terrarium serve"
+    command: "/bin/terra serve"
 ```
 
 All data is stored under `TERRARIUM_DATA` (`/app` in the container, `./data` on the host):
@@ -71,7 +90,7 @@ terraform {
 }
 ```
 
-Provide credentials via `$TF_HTTP_USERNAME` and `$TF_HTTP_PASSWORD`, then run `tofu init` to migrate.
+Provide credentials via `$TF_HTTP_USERNAME` and `$TF_HTTP_PASSWORD`, then run `terra init`.
 
 Workspace names support path prefixes: `infra/prod`, `apps/backend/staging`, etc.
 
@@ -82,21 +101,21 @@ Workspace names support path prefixes: `infra/prod`, `apps/backend/staging`, etc
 User management commands act directly on the local user database. When running in Docker, exec into the container or they'll write to a different path than the server uses:
 
 ```shell
-docker compose exec terrarium /bin/terrarium user add alice
+docker compose exec terrarium /bin/terra user add alice
 ```
 
 ```shell
 # Add a user (prompts for password if omitted)
-terrarium user add <username> [password]
+terra user add <username> [password]
 
 # Change a user's password
-terrarium user passwd <username>
+terra user passwd <username>
 
 # Delete a user
-terrarium user delete <username>
+terra user delete <username>
 
 # List all users
-terrarium user list
+terra user list
 ```
 
 ---
@@ -107,11 +126,27 @@ The `remote` subcommand talks to a running terrarium server over HTTP.
 
 ### Configuration
 
-Credentials and server URL are loaded in priority order:
+Save credentials interactively:
+
+```shell
+terra terra-login
+# prompts for server URL, username, and password
+# saves to ~/.config/terrarium/config.toml (chmod 600)
+```
+
+Or set environment variables:
+
+```shell
+export TERRARIUM_URL=https://terrarium.example
+export TERRARIUM_USER=alice
+export TERRARIUM_PASSWORD=secret
+```
+
+Full priority order:
 
 1. Environment variables: `TERRARIUM_URL`, `TERRARIUM_USER`, `TERRARIUM_PASSWORD`
 2. Config file (first found wins):
-   - `--config <path>` flag
+   - `--config <path>` flag on any `remote` command
    - `$TERRARIUM_CONFIG`
    - `~/.config/terrarium/config.toml`
    - `~/.terrarium.toml`
@@ -125,51 +160,55 @@ username = "alice"
 # password: use TERRARIUM_PASSWORD env var, not the config file
 ```
 
-Pass `--config <path>` to any `remote` command to use a specific config file.
-
 ### State
 
 ```shell
 # List all states
-terrarium remote state list
+terra remote state list
 
 # List states under a path prefix
-terrarium remote state list infra/
+terra remote state list infra/
 
-# Get current state (pretty-printed JSON by default)
-terrarium remote state get infra/prod
+# List archived states
+terra remote state list --archived
+
+# Get current state (pretty-printed by default)
+terra remote state get infra/prod
 
 # Get raw JSON
-terrarium remote state get infra/prod --raw
+terra remote state get infra/prod --raw
 
 # Get a specific historical version
-terrarium remote state get infra/prod --version 3
+terra remote state get infra/prod --version 3
 
 # List all available versions
-terrarium remote state versions infra/prod
+terra remote state versions infra/prod
 
 # Diff two versions (structural JSON diff)
-terrarium remote state diff infra/prod 2 5
+terra remote state diff infra/prod 2 5
 
 # Force-unlock a state
-terrarium remote state unlock infra/prod
+terra remote state unlock infra/prod
 
-# Archive a state (permanently read-only — cannot be undone)
-terrarium remote state archive infra/prod
+# Archive a state (marks it read-only, rejects future pushes)
+terra remote state archive infra/prod
+
+# Unarchive a state (re-enables writes)
+terra remote state unarchive infra/prod
 ```
 
 ### Locks
 
 ```shell
 # List all active locks
-terrarium remote lock list
+terra remote lock list
 ```
 
 ### Self-Service User
 
 ```shell
 # Change your own password
-terrarium remote user passwd [new-password]
+terra remote user passwd [new-password]
 ```
 
 ### Webhooks
@@ -178,17 +217,17 @@ Webhooks are scoped per workspace and fire on state and lock events.
 
 ```shell
 # Register a webhook (all events)
-terrarium remote webhook add infra/prod https://hooks.example.com/tf
+terra remote webhook add infra/prod https://hooks.example.com/tf
 
 # Register for specific events only
-terrarium remote webhook add infra/prod https://hooks.example.com/tf \
+terra remote webhook add infra/prod https://hooks.example.com/tf \
   --events state.push,lock.acquire
 
 # List webhooks for a workspace
-terrarium remote webhook list infra/prod
+terra remote webhook list infra/prod
 
 # Remove a webhook by ID
-terrarium remote webhook remove <id>
+terra remote webhook remove <id>
 ```
 
 **Supported events:** `state.push`, `state.delete`, `state.archive`, `lock.acquire`, `lock.release`
@@ -221,6 +260,7 @@ All endpoints require HTTP Basic Auth.
 | `DELETE` | `/state/{name}`         | Delete state                                               |
 | `GET`    | `/versions/{name}`      | List version numbers for a state                           |
 | `POST`   | `/archive/{name}`       | Archive a state (mark read-only)                           |
+| `DELETE` | `/archive/{name}`       | Unarchive a state (re-enable writes)                       |
 | `GET`    | `/lock`                 | List all active locks                                      |
 | `POST`   | `/lock/{name}`          | Acquire lock                                               |
 | `DELETE` | `/lock/{name}`          | Release lock                                               |

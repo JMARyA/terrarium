@@ -3,6 +3,10 @@ name = "terrarium"
 version = "0.1.0"
 edition = "2024"
 
+[[bin]]
+name = "terra"
+path = "src/main.rs"
+
 [dependencies]
 axum = "0.8"
 tokio = { version = "1", features = ["full"] }
@@ -26,3 +30,4 @@ facet-diff = "0.43"
 facet-value = "0.43"
 rpassword = "7"
 colored = "2"
+which = "7"

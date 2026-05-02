@@ -8,4 +8,4 @@ services:
     environment:
       - "RUST_LOG=info"
       - "TERRARIUM_DATA=/app"
-    command: "/bin/terrarium serve"
+    command: "/bin/terra serve"
