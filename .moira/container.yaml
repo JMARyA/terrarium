@@ -1,0 +1,23 @@
+name: container
+
+trigger:
+  on_push:
+    branches: [main]
+  manual: true
+
+needs_flake:
+  - packages.containerImage
+
+steps:
+  - name: push
+    env: .moira/envs/container.nix
+    run: |
+      skopeo copy \
+        --dest-creds "$REGISTRY_USER:$REGISTRY_PASS" \
+        docker-archive:${{ flake.packages.containerImage }} \
+        docker://hcr.hydrar.de/jmarya/terrarium:latest
+    secrets:
+      - REGISTRY_USER
+      - secret: REGISTRY_PASS
+        env: REGISTRY_PASS
+    network: true
