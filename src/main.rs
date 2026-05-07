@@ -9,6 +9,7 @@ use colored::Colorize as _;
 
 use crate::{lock::LockContainer, state::StateContainer, webhook::WebhookStore};
 use crate::tofu::TofuBinary;
+use crate::terranix::TerranixBinary;
 
 mod cli;
 mod client;
@@ -19,6 +20,7 @@ pub mod tfstate;
 pub mod user;
 pub mod webhook;
 mod tofu;
+mod terranix;
 
 #[derive(Clone)]
 pub struct AppState {
@@ -329,14 +331,30 @@ async fn main() {
 
     let cli: cli::Cli = argh::from_env();
     let tofu_binary = tofu::TofuBinary::detect().ok();
+    let terranix_binary = terranix::TerranixBinary::detect().ok();
 
     match cli.subcommand {
         // ── Tofu workflow commands ──
-        cli::SubCommand::Init(cmd) => run_tofu(tofu_binary, init_args(&cmd)),
-        cli::SubCommand::Validate(cmd) => run_tofu(tofu_binary, validate_args(&cmd)),
-        cli::SubCommand::Plan(cmd) => run_tofu(tofu_binary, plan_args(&cmd)),
-        cli::SubCommand::Apply(cmd) => run_tofu(tofu_binary, apply_args(&cmd)),
-        cli::SubCommand::Destroy(cmd) => run_tofu(tofu_binary, destroy_args(&cmd)),
+        cli::SubCommand::Init(ref cmd) => {
+            auto_nix_generate(&terranix_binary);
+            run_tofu(tofu_binary, init_args(cmd))
+        }
+        cli::SubCommand::Validate(ref cmd) => {
+            auto_nix_generate(&terranix_binary);
+            run_tofu(tofu_binary, validate_args(cmd))
+        }
+        cli::SubCommand::Plan(ref cmd) => {
+            auto_nix_generate(&terranix_binary);
+            run_tofu(tofu_binary, plan_args(cmd))
+        }
+        cli::SubCommand::Apply(ref cmd) => {
+            auto_nix_generate(&terranix_binary);
+            run_tofu(tofu_binary, apply_args(cmd))
+        }
+        cli::SubCommand::Destroy(ref cmd) => {
+            auto_nix_generate(&terranix_binary);
+            run_tofu(tofu_binary, destroy_args(cmd))
+        }
 
         // ── Tofu utility commands ──
         cli::SubCommand::Console(cmd) => run_tofu(tofu_binary, console_args(&cmd)),
@@ -358,6 +376,61 @@ async fn main() {
         cli::SubCommand::Workspace(cmd) => run_tofu(tofu_binary, workspace_args(&cmd.subcommand)),
         cli::SubCommand::State(cmd) => run_tofu(tofu_binary, state_args(&cmd.subcommand)),
         cli::SubCommand::Metadata(cmd) => run_tofu(tofu_binary, metadata_args(&cmd.subcommand)),
+
+        // ── Terranix commands ──
+        cli::SubCommand::Nix(cmd) => match cmd.subcommand {
+            cli::NixSubCommand::Generate(args) => {
+                let terranix = match &terranix_binary {
+                    Some(t) => t.clone(),
+                    None => {
+                        eprintln!("{} terranix binary not found in PATH.", "error:".bold().red());
+                        eprintln!("Install it from https://terranix.org");
+                        std::process::exit(1);
+                    }
+                };
+
+                let mut terranix_args = Vec::new();
+                for a in &args.arg {
+                    terranix_args.push("--arg".to_string());
+                    terranix_args.push(a.clone());
+                }
+                for a in &args.argstr {
+                    terranix_args.push("--argstr".to_string());
+                    terranix_args.push(a.clone());
+                }
+                terranix_args.push(args.config.clone());
+
+                let output = std::process::Command::new(terranix.path())
+                    .args(&terranix_args)
+                    .output()
+                    .unwrap_or_else(|e| {
+                        eprintln!("{} Failed to execute terranix: {e}", "error:".bold().red());
+                        std::process::exit(1);
+                    });
+
+                if !output.status.success() {
+                    let stderr = String::from_utf8_lossy(&output.stderr);
+                    eprintln!("{} terranix failed: {stderr}", "error:".bold().red());
+                    std::process::exit(output.status.code().unwrap_or(1));
+                }
+
+                match args.output {
+                    Some(ref out_path) => {
+                        std::fs::write(out_path, &output.stdout).unwrap_or_else(|e| {
+                            eprintln!("{} Failed to write {out_path}: {e}", "error:".bold().red());
+                            std::process::exit(1);
+                        });
+                        println!("{} {} {}", "Generated".green(), out_path, "(from terranix)".dimmed());
+                    }
+                    None => {
+                        std::io::stdout().write_all(&output.stdout).unwrap_or_else(|e| {
+                            eprintln!("{} Failed to write to stdout: {e}", "error:".bold().red());
+                            std::process::exit(1);
+                        });
+                    }
+                }
+            }
+        },
 
         // ── Native terrarium commands ──
         cli::SubCommand::Serve(_) => serve(tofu_binary).await,
@@ -446,6 +519,46 @@ fn run_tofu(tofu_binary: Option<TofuBinary>, args: Vec<String>) -> ! {
         });
 
     std::process::exit(status.code().unwrap_or(1));
+}
+
+fn auto_nix_generate(terranix_binary: &Option<TerranixBinary>) {
+    let candidates = [std::path::PathBuf::from("config.nix"), std::path::PathBuf::from("terra.nix")];
+    let nix_path = match candidates.iter().find(|p| p.exists()) {
+        Some(p) => p.clone(),
+        None => return,
+    };
+
+    let terranix = match terranix_binary {
+        Some(t) => t.clone(),
+        None => {
+            eprintln!("{} Found {} but terranix is not installed.", "warning:".bold().yellow(), nix_path.display());
+            eprintln!("  Install it from https://terranix.org or remove {}", nix_path.display());
+            std::process::exit(1);
+        }
+    };
+
+    let out_path = std::path::PathBuf::from("config.tf.json");
+
+    let output = std::process::Command::new(terranix.path())
+        .arg(nix_path.to_str().unwrap())
+        .output()
+        .unwrap_or_else(|e| {
+            eprintln!("{} Failed to execute terranix: {e}", "error:".bold().red());
+            std::process::exit(1);
+        });
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        eprintln!("{} terranix failed: {stderr}", "error:".bold().red());
+        std::process::exit(output.status.code().unwrap_or(1));
+    }
+
+    std::fs::write(&out_path, &output.stdout).unwrap_or_else(|e| {
+        eprintln!("{} Failed to write {}: {e}", "error:".bold().red(), out_path.display());
+        std::process::exit(1);
+    });
+
+    eprintln!("{} config.tf.json {} {}", "↻".cyan(), "generated from".dimmed(), nix_path.display().to_string().bold().cyan());
 }
 
 fn readline(prompt: &str) -> String {

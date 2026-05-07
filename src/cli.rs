@@ -43,6 +43,9 @@ pub enum SubCommand {
     User(UserCommand),
     Remote(RemoteCommand),
     TerrariumLogin(TerrariumLoginCommand),
+
+    // ── Terranix commands ──
+    Nix(NixCommand),
 }
 
 // ── Tofu workflow commands ────────────────────────────────────────────────
@@ -660,6 +663,40 @@ pub struct MetadataCommand {
 #[argh(subcommand)]
 pub enum MetadataSubCommand {
     // Add specific metadata subcommands as needed
+}
+
+// ── Terranix commands ──────────────────────────────────────────────────────
+
+#[derive(FromArgs)]
+/// Generate Terraform/OpenTofu JSON from a Nix config using terranix
+#[argh(subcommand, name = "nix")]
+pub struct NixCommand {
+    #[argh(subcommand)]
+    pub subcommand: NixSubCommand,
+}
+
+#[derive(FromArgs)]
+#[argh(subcommand)]
+pub enum NixSubCommand {
+    Generate(GenerateCommand),
+}
+
+#[derive(FromArgs)]
+/// Generate config.tf.json from a .nix file using terranix
+#[argh(subcommand, name = "generate")]
+pub struct GenerateCommand {
+    /// path to the nix config file
+    #[argh(positional)]
+    pub config: String,
+    /// output file path (defaults to stdout)
+    #[argh(option, short = 'o')]
+    pub output: Option<String>,
+    /// extra arguments passed to terranix
+    #[argh(option)]
+    pub arg: Vec<String>,
+    /// extra string arguments passed to terranix
+    #[argh(option)]
+    pub argstr: Vec<String>,
 }
 
 // ── Native terrarium commands ──────────────────────────────────────────────
