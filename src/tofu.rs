@@ -1,5 +1,5 @@
 use std::path::PathBuf;
-use std::process::{Command, Stdio};
+use std::process::{Command, Stdio, Child};
 
 #[derive(Debug, Clone)]
 pub struct TofuBinary {
@@ -18,6 +18,15 @@ impl TofuBinary {
 
     pub fn run(&self, args: &[&str]) -> std::io::Result<std::process::ExitStatus> {
         Command::new(&self.path).args(args).status()
+    }
+
+    pub fn spawn_piped(&self, args: &[&str]) -> std::io::Result<Child> {
+        Command::new(&self.path)
+            .args(args)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::inherit())
+            .stdin(Stdio::inherit())
+            .spawn()
     }
 
     #[allow(dead_code)]

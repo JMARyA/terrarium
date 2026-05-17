@@ -150,6 +150,9 @@ pub struct PlanCommand {
     /// skip pre-plan refresh of state
     #[argh(switch)]
     pub no_refresh: bool,
+    /// show full OpenTofu output instead of the brief summary
+    #[argh(switch)]
+    pub detail: bool,
 }
 
 #[derive(FromArgs)]
@@ -195,6 +198,9 @@ pub struct ApplyCommand {
     /// refresh-only apply
     #[argh(switch)]
     pub refresh_only: bool,
+    /// show full OpenTofu output instead of the brief summary
+    #[argh(switch)]
+    pub detail: bool,
 }
 
 #[derive(FromArgs)]

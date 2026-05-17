@@ -21,6 +21,7 @@ pub mod user;
 pub mod webhook;
 mod tofu;
 mod terranix;
+mod plan_json;
 
 #[derive(Clone)]
 pub struct AppState {
@@ -345,11 +346,22 @@ async fn main() {
         }
         cli::SubCommand::Plan(ref cmd) => {
             auto_nix_generate(&terranix_binary);
-            run_tofu(tofu_binary, plan_args(cmd))
+            if cmd.detail || cmd.json {
+                run_tofu(tofu_binary, plan_args(cmd))
+            } else {
+                let mut args = plan_args(cmd);
+                args.push("-json".to_string());
+                args.push("-no-color".to_string());
+                plan_json::run_plan_pretty(&require_tofu(tofu_binary), args)
+            }
         }
         cli::SubCommand::Apply(ref cmd) => {
             auto_nix_generate(&terranix_binary);
-            run_tofu(tofu_binary, apply_args(cmd))
+            if cmd.detail || cmd.json {
+                run_tofu(tofu_binary, apply_args(cmd))
+            } else {
+                plan_json::run_apply_pretty(&require_tofu(tofu_binary), cmd)
+            }
         }
         cli::SubCommand::Destroy(ref cmd) => {
             auto_nix_generate(&terranix_binary);
@@ -502,15 +514,19 @@ async fn main() {
 
 // ── Helper functions ─────────────────────────────────────────────────────
 
-fn run_tofu(tofu_binary: Option<TofuBinary>, args: Vec<String>) -> ! {
-    let tofu = match tofu_binary {
+fn require_tofu(tofu_binary: Option<TofuBinary>) -> TofuBinary {
+    match tofu_binary {
         Some(t) => t,
         None => {
             eprintln!("{} OpenTofu binary not found in PATH.", "error:".bold().red());
             eprintln!("Install it from https://opentofu.org");
             std::process::exit(1);
         }
-    };
+    }
+}
+
+fn run_tofu(tofu_binary: Option<TofuBinary>, args: Vec<String>) -> ! {
+    let tofu = require_tofu(tofu_binary);
 
     let status = tofu.run(&args.iter().map(|s| s.as_str()).collect::<Vec<&str>>())
         .unwrap_or_else(|e| {
