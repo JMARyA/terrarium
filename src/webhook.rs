@@ -4,7 +4,7 @@ use std::sync::Arc;
 use axum::Json;
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
-use authur::extractor::BasicAuthUser;
+use crate::auth::AuthUser;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use tokio::sync::RwLock;
@@ -153,7 +153,7 @@ pub struct AddWebhookBody {
 pub async fn add_webhook(
     State(app): State<AppState>,
     Path(workspace): Path<String>,
-    _auth: BasicAuthUser,
+    _auth: AuthUser,
     Json(body): Json<AddWebhookBody>,
 ) -> Result<Json<Webhook>, StatusCode> {
     let hook = Webhook {
@@ -170,7 +170,7 @@ pub async fn add_webhook(
 pub async fn list_webhooks(
     State(app): State<AppState>,
     Path(workspace): Path<String>,
-    _auth: BasicAuthUser,
+    _auth: AuthUser,
 ) -> Json<Vec<Webhook>> {
     Json(app.webhooks.list_for(&workspace).await)
 }
@@ -179,7 +179,7 @@ pub async fn list_webhooks(
 pub async fn remove_webhook(
     State(app): State<AppState>,
     Path(id): Path<String>,
-    _auth: BasicAuthUser,
+    _auth: AuthUser,
 ) -> Result<StatusCode, StatusCode> {
     if app.webhooks.remove(&id).await {
         Ok(StatusCode::OK)

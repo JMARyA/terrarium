@@ -21,9 +21,10 @@ Terraform state is critical, shared, and easy to corrupt. Terrarium exists becau
 - 📦 Workspace archival — mark a workspace read-only permanently
 - 🪝 Webhooks — event-driven integration per workspace
 - 🗂 Path-prefix namespacing — `infra/prod`, `apps/backend/staging`
+- 🖥 Built-in read-only web UI — workspaces, version history, state diffs, dependency graph, locks, activity
 - 🦎 Single static binary (`terra`)
 - 🧱 Cloud-agnostic
-- 🔐 HTTP Basic Auth
+- 🔐 HTTP Basic Auth, browser sessions, and self-service Bearer API tokens
 
 ---
 
@@ -72,6 +73,34 @@ All data is stored under `TERRARIUM_DATA` (`/app` in the container, `./data` on 
 | `locks/`        | Persisted lock files |
 | `users/`        | User database        |
 | `webhooks.json` | Registered webhooks  |
+
+---
+
+## Web UI
+
+Terrarium serves a small, **read-only** web dashboard from the same server, at the root path (`/`). It's purely informational — a viewer, not a control plane: there are no plan/apply/force-unlock actions. The only things it mutates are your own login session and your own API tokens.
+
+Open `http://your-server:8080/` and sign in with any user from the user database.
+
+What's there:
+
+- **Workspaces** (`/`) — namespace tree, active locks, archived states
+- **Per workspace** (`/w/{name}`) — lock status, version history with a size trend, registered webhooks, and an **activity log** derived from lock history (who locked the state, for which operation, when)
+- **State view** (`/w/{name}` → a version, or `/graph/{name}?version=N`) — state metadata, resources grouped by type, outputs, and a **dependency graph** rendered as inline SVG (no external assets)
+- **Diff** (`/diff/{name}?from=A&to=B`) — structural diff between any two versions
+- **Tokens** (`/tokens`) — create, list, and revoke your own API tokens
+
+### Authentication
+
+| Audience | Credential |
+| --- | --- |
+| Browser | `session` cookie, set on login at `/login` |
+| Terraform HTTP backend / `terra remote` | HTTP Basic Auth |
+| Scripts / CI | `Authorization: Bearer <token>` (tokens minted in the UI) |
+
+API endpoints accept **either** Basic Auth **or** a Bearer token, so a token minted in the UI works directly against the HTTP API.
+
+The session cookie is marked `Secure` only when `TERRARIUM_TLS` is set (`1`/`true`) — set it when terra runs behind TLS. Leave it unset for plain-HTTP local testing.
 
 ---
 
@@ -250,7 +279,7 @@ Delivery is retried up to 4 times with exponential backoff (1 s → 2 s → 4 s)
 
 ## HTTP API
 
-All endpoints require HTTP Basic Auth.
+All endpoints require authentication — either HTTP Basic Auth or an `Authorization: Bearer <token>` API token (created via the web UI).
 
 | Method   | Path                    | Description                                                |
 | -------- | ----------------------- | ---------------------------------------------------------- |
