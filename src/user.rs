@@ -1,4 +1,4 @@
-use authur::extractor::BasicAuthUser;
+use crate::auth::AuthUser;
 use axum::{Json, extract::State, http::StatusCode};
 use serde::Deserialize;
 
@@ -12,7 +12,7 @@ pub struct ChangePasswordBody {
 
 /// Self-service password change — authenticated user changes their own password
 pub async fn change_own_password(
-    BasicAuthUser(user): BasicAuthUser,
+    AuthUser(user): AuthUser,
     State(app): State<AppState>,
     Json(body): Json<ChangePasswordBody>,
 ) -> Result<StatusCode, StatusCode> {

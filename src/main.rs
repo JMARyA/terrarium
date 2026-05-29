@@ -22,6 +22,9 @@ pub mod webhook;
 mod tofu;
 mod terranix;
 mod plan_json;
+mod statediff;
+mod ui;
+mod auth;
 
 #[derive(Clone)]
 pub struct AppState {
@@ -618,6 +621,14 @@ async fn serve(tofu_binary: Option<TofuBinary>) {
             get(webhook::list_webhooks).post(webhook::add_webhook),
         )
         .route("/webhooks/id/{id}", axum::routing::delete(webhook::remove_webhook))
+        .route("/", get(ui::dashboard))
+        .route("/login", get(ui::login_page).post(ui::login_submit))
+        .route("/logout", post(ui::logout))
+        .route("/w/{*name}", get(ui::workspace))
+        .route("/diff/{*name}", get(ui::diff_view))
+        .route("/graph/{*name}", get(ui::graph_view))
+        .route("/tokens", get(ui::tokens_page).post(ui::token_create))
+        .route("/tokens/{id}/revoke", post(ui::token_revoke))
         .with_state(state);
 
     let listener = tokio::net::TcpListener::bind("0.0.0.0:8080")
@@ -748,75 +759,45 @@ async fn handle_remote_command(remote: cli::RemoteCommand) {
                     Err(e) => die(e),
                 };
 
-                use facet_diff::FacetDiff;
-                use std::collections::HashMap as AddrMap;
+                use crate::statediff::{Change, StateDiff};
 
-                let from_s = String::from_utf8_lossy(&from);
-                let to_s = String::from_utf8_lossy(&to);
+                match crate::statediff::diff_states(&from, &to) {
+                    StateDiff::Structured { terraform_version, serial, changes } => {
+                        println!("{} {} {} {} {}", "diff".bold(), args.name.bold(), format!("v{}", args.from).cyan(), "→".dimmed(), format!("v{}", args.to).cyan());
 
-                let a_state = facet_json::from_str::<crate::tfstate::TfState>(&from_s).ok();
-                let b_state = facet_json::from_str::<crate::tfstate::TfState>(&to_s).ok();
+                        let no_changes = terraform_version.is_none() && serial.is_none() && changes.is_empty();
 
-                if let (Some(a), Some(b)) = (a_state, b_state) {
-                    let a_map: AddrMap<String, &crate::tfstate::TfResource> = a.resources.iter().map(|r| (r.address(), r)).collect();
-                    let b_map: AddrMap<String, &crate::tfstate::TfResource> = b.resources.iter().map(|r| (r.address(), r)).collect();
-
-                    let mut addrs: Vec<String> = a_map.keys().chain(b_map.keys()).cloned().collect();
-                    addrs.sort();
-                    addrs.dedup();
-
-                    println!("{} {} {} {} {}", "diff".bold(), args.name.bold(), format!("v{}", args.from).cyan(), "→".dimmed(), format!("v{}", args.to).cyan());
-                    let mut any_change = false;
-
-                    if a.serial != b.serial || a.terraform_version != b.terraform_version {
-                        if a.terraform_version != b.terraform_version {
-                            println!("  {} {} {} {}", "terraform:".dimmed(), a.terraform_version.yellow(), "→".dimmed(), b.terraform_version.yellow());
+                        if let Some((a, b)) = &terraform_version {
+                            println!("  {} {} {} {}", "terraform:".dimmed(), a.yellow(), "→".dimmed(), b.yellow());
                         }
-                        println!("  {} {} {} {}", "serial:".dimmed(), a.serial.to_string().yellow(), "→".dimmed(), b.serial.to_string().yellow());
-                        any_change = true;
-                    }
+                        if let Some((a, b)) = &serial {
+                            println!("  {} {} {} {}", "serial:".dimmed(), a.to_string().yellow(), "→".dimmed(), b.to_string().yellow());
+                        }
 
-                    for addr in &addrs {
-                        match (a_map.get(addr), b_map.get(addr)) {
-                            (None, Some(_)) => {
-                                println!("  {} {}", "+".bold().green(), addr.green());
-                                any_change = true;
-                            }
-                            (Some(_), None) => {
-                                println!("  {} {}", "-".bold().red(), addr.red());
-                                any_change = true;
-                            }
-                            (Some(ra), Some(rb)) if ra.instances != rb.instances => {
-                                println!("  {} {}", "~".bold().yellow(), addr.yellow());
-                                for (i, (ia, ib)) in ra.instances.iter().zip(rb.instances.iter()).enumerate() {
-                                    if ia.attributes != ib.attributes {
-                                        if ra.instances.len() > 1 {
-                                            println!("    {}", format!("[{i}]").dimmed());
+                        for change in &changes {
+                            match change {
+                                Change::Added(addr) => println!("  {} {}", "+".bold().green(), addr.green()),
+                                Change::Removed(addr) => println!("  {} {}", "-".bold().red(), addr.red()),
+                                Change::Modified { addr, instances } => {
+                                    println!("  {} {}", "~".bold().yellow(), addr.yellow());
+                                    for inst in instances {
+                                        if inst.multi {
+                                            println!("    {}", format!("[{}]", inst.index).dimmed());
                                         }
-                                        let diff = format!("{}", ia.attributes.diff(&ib.attributes));
-                                        for line in diff.lines() {
+                                        for line in inst.diff.lines() {
                                             println!("    {line}");
                                         }
                                     }
                                 }
-                                any_change = true;
                             }
-                            _ => {}
+                        }
+
+                        if no_changes {
+                            println!("  {}", "(no changes)".dimmed());
                         }
                     }
-                    if !any_change {
-                        println!("  {}", "(no changes)".dimmed());
-                    }
-                } else {
-                    let a = match facet_json::from_str::<facet_value::Value>(&from_s) {
-                        Ok(v) => v,
-                        Err(e) => die(format!("v{} is not valid JSON: {e}", args.from)),
-                    };
-                    let b = match facet_json::from_str::<facet_value::Value>(&to_s) {
-                        Ok(v) => v,
-                        Err(e) => die(format!("v{} is not valid JSON: {e}", args.to)),
-                    };
-                    println!("{}", a.diff(&b));
+                    StateDiff::Raw(out) => println!("{out}"),
+                    StateDiff::Error(e) => die(e),
                 }
             }
             cli::RemoteStateSubCommand::Unlock(args) => {

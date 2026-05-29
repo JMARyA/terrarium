@@ -1,4 +1,4 @@
-use authur::extractor::BasicAuthUser;
+use crate::auth::AuthUser;
 use axum::Json;
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
@@ -171,7 +171,7 @@ pub struct LockQuery {
 /// List all state names, optionally scoped to a path prefix
 pub async fn list_states(
     State(app): State<AppState>,
-    _auth: BasicAuthUser,
+    _auth: AuthUser,
     Query(q): Query<ListQuery>,
 ) -> Result<Json<Vec<String>>, StatusCode> {
     if let Some(ref p) = q.prefix {
@@ -184,7 +184,7 @@ pub async fn list_states(
 pub async fn list_versions(
     State(app): State<AppState>,
     Path(name): Path<String>,
-    _auth: BasicAuthUser,
+    _auth: AuthUser,
 ) -> Result<Json<Vec<u32>>, StatusCode> {
     validate_name(&name)?;
     Ok(Json(app.state.list_versions(&name)))
@@ -194,7 +194,7 @@ pub async fn list_versions(
 pub async fn unarchive_state(
     State(app): State<AppState>,
     Path(name): Path<String>,
-    BasicAuthUser(user): BasicAuthUser,
+    AuthUser(user): AuthUser,
 ) -> Result<StatusCode, StatusCode> {
     validate_name(&name)?;
     tracing::info!("📬 Unarchiving state {name}");
@@ -210,7 +210,7 @@ pub async fn unarchive_state(
 pub async fn archive_state(
     State(app): State<AppState>,
     Path(name): Path<String>,
-    BasicAuthUser(user): BasicAuthUser,
+    AuthUser(user): AuthUser,
 ) -> Result<StatusCode, StatusCode> {
     validate_name(&name)?;
     tracing::info!("📦 Archiving state {name}");
@@ -227,7 +227,7 @@ pub async fn get_state(
     State(app): State<AppState>,
     Path(name): Path<String>,
     Query(q): Query<GetQuery>,
-    _auth: BasicAuthUser,
+    _auth: AuthUser,
 ) -> Result<Bytes, StatusCode> {
     validate_name(&name)?;
     tracing::info!("🔖 Getting state for {name}");
@@ -243,7 +243,7 @@ pub async fn put_state(
     State(app): State<AppState>,
     Path(name): Path<String>,
     Query(lock): Query<LockQuery>,
-    BasicAuthUser(user): BasicAuthUser,
+    AuthUser(user): AuthUser,
     body: Bytes,
 ) -> Result<StatusCode, StatusCode> {
     validate_name(&name)?;
@@ -271,7 +271,7 @@ pub async fn delete_state(
     State(app): State<AppState>,
     Path(name): Path<String>,
     Query(lock): Query<LockQuery>,
-    BasicAuthUser(user): BasicAuthUser,
+    AuthUser(user): AuthUser,
 ) -> Result<StatusCode, StatusCode> {
     validate_name(&name)?;
     tracing::info!("♻️ Trying to delete state for {name}");

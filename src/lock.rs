@@ -1,5 +1,5 @@
 use crate::AppState;
-use authur::extractor::BasicAuthUser;
+use crate::auth::AuthUser;
 use axum::{
     Json,
     extract::{Path, State},
@@ -64,6 +64,26 @@ impl LockContainer {
             .collect()
     }
 
+    /// Every lock ever acquired for a workspace, newest first.
+    ///
+    /// Persisted `.lock` files are written on acquire and never deleted on
+    /// release, so they double as an audit trail of who locked the state, for
+    /// which operation, and when.
+    pub fn history(&self, name: &str) -> Vec<LockInfo> {
+        let dir = self.persisted.join(name);
+        let mut entries: Vec<LockInfo> = std::fs::read_dir(&dir)
+            .map(|rd| {
+                rd.filter_map(|e| e.ok())
+                    .filter(|e| e.path().extension().is_some_and(|x| x == "lock"))
+                    .filter_map(|e| std::fs::read_to_string(e.path()).ok())
+                    .filter_map(|s| serde_json::from_str::<LockInfo>(&s).ok())
+                    .collect()
+            })
+            .unwrap_or_default();
+        entries.sort_by(|a, b| b.Created.cmp(&a.Created));
+        entries
+    }
+
     pub fn insert(&self, name: &str, lock_info: LockInfo) {
         let name_dir = self.persisted.join(name);
         if !name_dir.exists() {
@@ -81,7 +101,7 @@ impl LockContainer {
 /// List all active locks
 pub async fn list_locks(
     State(app): State<AppState>,
-    _auth: BasicAuthUser,
+    _auth: AuthUser,
 ) -> Json<HashMap<String, LockInfo>> {
     Json(app.locks.list())
 }
@@ -100,7 +120,7 @@ fn validate_name(name: &str) -> Result<(), StatusCode> {
 
 /// Create a lock on state
 pub async fn lock(
-    _auth: BasicAuthUser, // used below for webhook username
+    _auth: AuthUser, // used below for webhook username
     State(app): State<AppState>,
     Path(name): Path<String>,
     Json(info): Json<LockInfo>,
@@ -128,7 +148,7 @@ pub async fn lock(
 
 /// Unlock a state
 pub async fn unlock(
-    BasicAuthUser(user): BasicAuthUser,
+    AuthUser(user): AuthUser,
     State(app): State<AppState>,
     Path(name): Path<String>,
 ) -> Result<Json<LockInfo>, StatusCode> {
