@@ -12,7 +12,7 @@ steps:
   - name: push
     env: .moira/envs/container.nix
     run: |
-      skopeo copy \
+      skopeo copy --policy .containers-policy.json \
         --dest-creds "$REGISTRY_USER:$REGISTRY_PASS" \
         docker-archive:${{ flake.packages.containerImage }} \
         docker://hcr.hydrar.de/jmarya/terrarium:latest
