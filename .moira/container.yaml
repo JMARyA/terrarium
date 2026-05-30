@@ -15,7 +15,7 @@ steps:
       skopeo copy --policy .containers-policy.json \
         --dest-creds "$REGISTRY_USER:$REGISTRY_PASS" \
         docker-archive:${{ flake.packages.containerImage }} \
-        docker://hcr.hydrar.de/jmarya/terrarium:latest
+        docker://git.hydrar.de/jmarya/terrarium:latest
     secrets:
       - REGISTRY_USER
       - secret: REGISTRY_PASS

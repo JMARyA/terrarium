@@ -14,7 +14,7 @@ steps:
       skopeo copy --policy .containers-policy.json \
         --dest-creds "$REGISTRY_USER:$REGISTRY_PASS" \
         docker-archive:${{ flake.packages.containerImage }} \
-        "docker://hcr.hydrar.de/jmarya/terrarium:${MOIRA_COMMIT_TAG}"
+        "docker://git.hydrar.de/jmarya/terrarium:${MOIRA_COMMIT_TAG}"
     secrets:
       - REGISTRY_USER
       - secret: REGISTRY_PASS
