@@ -7,11 +7,7 @@ trigger:
     target: [main]
 
 steps:
-  - name: test
-    env: .moira/envs/rust.nix
-    run: |
-      rustup default nightly
-      cargo check -j 4
-      cargo test -j 4 --all-features
-    vars:
-      CARGO_TERM_COLOR: always
+  - name: check
+    env: .moira/envs/nix.nix
+    run: nix flake check --no-update-lock-file
+    network: true
