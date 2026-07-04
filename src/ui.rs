@@ -1328,58 +1328,69 @@ document.addEventListener("DOMContentLoaded", function() {
 Terrarium creates it automatically on first push. Use <a href="/tokens">API tokens</a> instead of your password when possible.</p>
 
 <h2>2 — Provider registry</h2>
-<p class="dim">Terrarium is a full Terraform provider registry. Push a provider binary and source it directly.</p>
+<p class="dim">Terrarium is a full Terraform provider registry. Push a provider binary, upload its docs, and source it directly from OpenTofu.</p>
 
-<p><strong>Push a provider</strong> (one platform at a time):</p>
+<p><strong>Push a provider binary</strong> (one platform at a time):</p>
 <div class="panel"><pre data-url>curl -u alice:token \
   -X POST "https://terrarium.example/registry/providers/&lt;namespace&gt;/&lt;type&gt;/&lt;version&gt;/&lt;os&gt;/&lt;arch&gt;" \
   --data-binary @terraform-provider-&lt;type&gt;_&lt;version&gt;_&lt;os&gt;_&lt;arch&gt;.zip</pre></div>
 
-<p class="dim">Example: push hashicorp/null 3.2.0 for linux/amd64:</p>
-<div class="panel"><pre data-url>curl -u alice:token \
-  -X POST "https://terrarium.example/registry/providers/hashicorp/null/3.2.0/linux/amd64" \
-  --data-binary @terraform-provider-null_3.2.0_linux_amd64.zip</pre></div>
-
-<p><strong>Upload docs</strong> (Markdown, shown on the registry detail page):</p>
-<div class="panel"><pre data-url>curl -u alice:token \
-  -X PUT "https://terrarium.example/registry/providers/hashicorp/null/3.2.0/docs" \
-  -d '# Null Provider
-Creates and manages null resources useful for testing.'</pre></div>
+<p><strong>Upload documentation</strong> — the registry shows per-resource and per-data-source pages with a sidebar, just like registry.terraform.io.
+Docs are sourced from the <code>docs/</code> directory that <a href="https://github.com/hashicorp/terraform-plugin-docs">terraform-plugin-docs</a> generates.</p>
+<div class="panel"><pre data-url># Zip the provider's docs/ directory and upload it:
+cd /path/to/terraform-provider-example
+zip -r /tmp/example-docs.zip docs/
+curl -u alice:token \
+  -X PUT "https://terrarium.example/registry/providers/&lt;namespace&gt;/&lt;type&gt;/&lt;version&gt;/docs" \
+  --data-binary @/tmp/example-docs.zip</pre></div>
+<p class="dim">A plain Markdown body is also accepted and stored as the provider overview page.</p>
 
 <p><strong>Source from this registry</strong> in your Terraform config:</p>
 <div class="panel"><pre data-url>terraform {
   required_providers {
-    null = {
-      source  = "terrarium.example/hashicorp/null"
-      version = "3.2.0"
+    example = {
+      source  = "terrarium.example/&lt;namespace&gt;/&lt;type&gt;"
+      version = "&lt;version&gt;"
     }
   }
 }</pre></div>
-
 <p class="dim">The service discovery endpoint (<code>/.well-known/terraform.json</code>) tells OpenTofu where to find the provider API automatically when the hostname matches.</p>
 
-<h2>3 — Provider mirror (recommended for air-gapped or team setups)</h2>
-<p class="dim">Configure OpenTofu to pull providers from terrarium instead of the internet.
-Because OpenTofu requires HTTPS for network mirrors, use the <strong>filesystem mirror</strong> approach locally
-or point a real HTTPS URL at terrarium in production.</p>
+<h2>3 — Provider mirror</h2>
+<p class="dim">Mirror providers from registry.terraform.io into terrarium. Binaries and documentation are fetched automatically — docs are pulled from the provider's GitHub repository at the release tag.</p>
 
-<p><strong>Step 1 — Mirror a provider from the upstream registry:</strong></p>
+<p><strong>One-shot mirror via API:</strong></p>
 <div class="panel"><pre data-url>curl -u alice:token \
   -X POST "https://terrarium.example/registry/mirror" \
   -H "Content-Type: application/json" \
   -d '{
     "namespace": "hashicorp",
-    "type": "null",
-    "versions": ["3.2.0"],
+    "type": "aws",
+    "versions": ["5.60.0"],
     "platforms": [
       {"os": "linux",  "arch": "amd64"},
+      {"os": "linux",  "arch": "arm64"},
       {"os": "darwin", "arch": "arm64"}
     ]
   }'</pre></div>
+<p class="dim">Omit <code>versions</code> to mirror all versions. Omit <code>platforms</code> to use the default five (linux/darwin/windows × amd64/arm64).</p>
 
-<p class="dim">Omit <code>versions</code> to mirror all available versions. Omit <code>platforms</code> to mirror the five most common ones.</p>
+<p><strong>Automatic mirror on startup</strong> — place a <code>mirrors.json</code> file in the data directory (<code>TERRARIUM_DATA</code>):</p>
+<div class="panel"><pre>[
+  {
+    "namespace": "hashicorp",
+    "type": "aws",
+    "versions": ["5.60.0"],
+    "platforms": [{"os": "linux", "arch": "amd64"}, {"os": "darwin", "arch": "arm64"}]
+  },
+  {
+    "namespace": "hashicorp",
+    "type": "random"
+  }
+]</pre></div>
+<p class="dim">Set <code>TERRARIUM_MIRROR_INTERVAL=86400</code> to re-mirror daily (value is in seconds). The NixOS module accepts this declaratively via <code>services.terrarium.mirrors</code> and <code>services.terrarium.mirrorInterval</code>.</p>
 
-<p><strong>Step 2 — Configure OpenTofu to use terrarium as a network mirror</strong> (requires HTTPS on the terrarium server):</p>
+<p><strong>Configure OpenTofu to use terrarium as a network mirror</strong> (requires HTTPS):</p>
 <div class="panel"><pre data-url># ~/.tofurc  (or TF_CLI_CONFIG_FILE)
 provider_installation {
   network_mirror {
@@ -1391,8 +1402,8 @@ provider_installation {
   }
 }</pre></div>
 
-<p><strong>Alternatively — filesystem mirror</strong> (works over plain HTTP, good for local dev):</p>
-<div class="panel"><pre data-url># Download the provider from terrarium
+<p><strong>Filesystem mirror</strong> (works over plain HTTP, good for local dev):</p>
+<div class="panel"><pre data-url># Download a provider zip from terrarium
 mkdir -p /tmp/mirror/registry.terraform.io/hashicorp/null
 curl -u alice:token \
   "https://terrarium.example/registry/providers/hashicorp/null/3.2.0/linux/amd64/zip" \
@@ -1437,12 +1448,13 @@ terra remote webhook add &lt;ws&gt; &lt;url&gt; # register a webhook</pre></div>
 The web UI uses a session cookie set at login.</p>
 
 <h2>6 — Environment variables</h2>
-<div class="panel"><pre>TERRARIUM_DATA     # server data directory (default: current dir)
-TERRARIUM_TLS      # set to 1 to mark session cookies Secure (use behind TLS)
-TERRARIUM_URL      # client: server URL
-TERRARIUM_USER     # client: username
-TERRARIUM_PASSWORD # client: password
-TERRARIUM_CONFIG   # client: path to config file</pre></div>
+<div class="panel"><pre>TERRARIUM_DATA             # server: data directory (default: current dir)
+TERRARIUM_TLS              # server: set to 1 to mark session cookies Secure (use behind TLS)
+TERRARIUM_MIRROR_INTERVAL  # server: re-mirror every N seconds (requires mirrors.json in data dir)
+TERRARIUM_URL              # client: server URL
+TERRARIUM_USER             # client: username
+TERRARIUM_PASSWORD         # client: password
+TERRARIUM_CONFIG           # client: path to config file</pre></div>
 "#;
 
     page("Help", user.as_deref(), body)
