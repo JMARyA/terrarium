@@ -614,7 +614,7 @@ async fn serve(tofu_binary: Option<TofuBinary>) {
         .route("/archive/{*name}", post(state::archive_state).delete(state::unarchive_state))
         .route("/versions/{*name}", get(state::list_versions))
         .route("/lock", get(lock::list_locks))
-        .route("/lock/{*name}", post(lock::lock).delete(lock::unlock))
+        .route("/lock/{*name}", post(lock::lock).delete(lock::unlock).fallback(lock::lock_method_compat))
         .route("/user/password", put(user::change_own_password))
         .route(
             "/webhooks/{*workspace}",

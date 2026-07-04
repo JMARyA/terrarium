@@ -2,8 +2,9 @@ use crate::AppState;
 use crate::auth::AuthUser;
 use axum::{
     Json,
-    extract::{Path, State},
+    extract::{Path, Request, State},
     http::StatusCode,
+    response::IntoResponse,
 };
 use dashmap::DashMap;
 use serde::{Deserialize, Serialize};
@@ -144,6 +145,58 @@ pub async fn lock(
     locks.insert(&name, info.clone());
     app.webhooks.fire("lock.acquire", &name, None, _auth.0.username.as_str()).await;
     Ok(Json(info))
+}
+
+/// Fallback for the non-standard LOCK and UNLOCK HTTP methods that the
+/// Terraform HTTP backend sends by default, so no `lock_method`/`unlock_method`
+/// overrides are needed in backend configs.
+pub async fn lock_method_compat(
+    AuthUser(user): AuthUser,
+    State(app): State<AppState>,
+    Path(name): Path<String>,
+    req: Request,
+) -> impl IntoResponse {
+    if validate_name(&name).is_err() {
+        return StatusCode::BAD_REQUEST.into_response();
+    }
+
+    match req.method().as_str() {
+        "LOCK" => {
+            tracing::info!("🔒 Trying to lock {name}");
+
+            if app.state.is_archived(&name) {
+                return StatusCode::FORBIDDEN.into_response();
+            }
+            if app.locks.get(&name).is_some() {
+                return StatusCode::CONFLICT.into_response();
+            }
+
+            let bytes = match axum::body::to_bytes(req.into_body(), usize::MAX).await {
+                Ok(b) => b,
+                Err(_) => return StatusCode::BAD_REQUEST.into_response(),
+            };
+            let info: LockInfo = match serde_json::from_slice(&bytes) {
+                Ok(i) => i,
+                Err(_) => return StatusCode::BAD_REQUEST.into_response(),
+            };
+
+            tracing::info!("🔒 Acquired lock for {name}: {info:#?}");
+            app.locks.insert(&name, info.clone());
+            app.webhooks.fire("lock.acquire", &name, None, &user.username).await;
+            Json(info).into_response()
+        }
+        "UNLOCK" => {
+            tracing::info!("🔓 Unlocking {name}");
+            if let Some(info) = app.locks.remove(&name) {
+                tracing::info!("🔓 Unlocked {name}");
+                app.webhooks.fire("lock.release", &name, None, &user.username).await;
+                Json(info).into_response()
+            } else {
+                StatusCode::NOT_FOUND.into_response()
+            }
+        }
+        _ => StatusCode::METHOD_NOT_ALLOWED.into_response(),
+    }
 }
 
 /// Unlock a state

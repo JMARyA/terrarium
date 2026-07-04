@@ -8,7 +8,6 @@
 
     flake-utils.url = "github:numtide/flake-utils";
 
-    # Add rust-overlay for easy nightly access
     rust-overlay = {
       url = "github:oxalica/rust-overlay";
       inputs.nixpkgs.follows = "nixpkgs";
@@ -24,7 +23,13 @@
       rust-overlay,
       ...
     }@inputs:
-    flake-utils.lib.eachDefaultSystem (
+    let
+      nixosModule = import ./nixos/module.nix self;
+    in
+    {
+      nixosModules.default = nixosModule;
+    }
+    // flake-utils.lib.eachDefaultSystem (
       system:
       let
         pkgs = import nixpkgs {
@@ -32,7 +37,6 @@
           overlays = [ rust-overlay.overlays.default ];
         };
 
-        # Create a custom Rust toolchain with nightly
         rustToolchain = pkgs.rust-bin.nightly.latest.default.override {
           extensions = [
             "rust-src"
@@ -40,7 +44,6 @@
           ];
         };
 
-        # Override craneLib to use the nightly toolchain
         craneLib = (crane.mkLib pkgs).overrideToolchain rustToolchain;
 
         commonArgs = {
@@ -94,10 +97,14 @@
 
           enableFakechroot = true;
         };
+
+        nixosTest = import ./nixos/test.nix { inherit pkgs nixosModule terrarium; };
       in
       {
         checks = {
           inherit terrarium;
+        } // pkgs.lib.optionalAttrs pkgs.stdenv.isLinux {
+          nixos-integration = nixosTest;
         };
 
         packages.default = terrarium;
