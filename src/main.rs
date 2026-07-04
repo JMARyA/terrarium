@@ -645,6 +645,7 @@ async fn serve(tofu_binary: Option<TofuBinary>) {
         .route("/tokens/{id}/revoke", post(ui::token_revoke))
         .route("/registry", get(ui::registry_page))
         .route("/registry/{namespace}/{type}", get(ui::provider_page))
+        .route("/help", get(ui::help_page))
         .with_state(state);
 
     let listener = tokio::net::TcpListener::bind("0.0.0.0:8080")

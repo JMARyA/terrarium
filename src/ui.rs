@@ -129,13 +129,13 @@ form.inline { display:flex; gap:10px; align-items:center; flex-wrap:wrap; }
 fn page(title: &str, user: Option<&str>, body: &str) -> Html<String> {
     let nav = match user {
         Some(u) => format!(
-            r#"<nav><a href="/">Workspaces</a><a href="/registry">Registry</a><a href="/tokens">Tokens</a></nav>
+            r#"<nav><a href="/">Workspaces</a><a href="/registry">Registry</a><a href="/tokens">Tokens</a><a href="/help">Help</a></nav>
                <span class="spacer"></span>
                <span class="dim">{}</span>
                <form method="post" action="/logout"><button type="submit">logout</button></form>"#,
             esc(u)
         ),
-        None => String::new(),
+        None => r#"<nav><a href="/help">Help</a></nav>"#.to_string(),
     };
     Html(format!(
         r#"<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
@@ -1108,4 +1108,161 @@ pub async fn provider_page(
         latest = versions.last().map(|s: &String| s.as_str()).unwrap_or(""),
     );
     page(&format!("{ns}/{tp}"), user.as_deref(), &body).into_response()
+}
+
+// ── Help page ────────────────────────────────────────────────────────────────
+
+/// `GET /help` — public how-to page, no login required.
+pub async fn help_page(maybe: MaybeUser) -> Html<String> {
+    let user = maybe.user().map(|u| u.username.clone());
+
+    // The JS snippet rewrites every `data-url` element with the actual origin
+    // so all example snippets contain the real server address.
+    let body = r#"
+<h1>How to use terrarium</h1>
+<p class="dim">Quick-start guide. The server address in all examples is filled in automatically.</p>
+
+<script>
+document.addEventListener("DOMContentLoaded", function() {
+  var origin = window.location.origin;
+  document.querySelectorAll("[data-url]").forEach(function(el) {
+    el.textContent = el.textContent.replaceAll("https://terrarium.example", origin);
+  });
+});
+</script>
+
+<h2>1 — State backend (Terraform / OpenTofu)</h2>
+<p class="dim">Store your Terraform state in terrarium instead of S3 or Terraform Cloud.</p>
+<div class="panel"><pre data-url>terraform {
+  backend "http" {
+    address        = "https://terrarium.example/state/&lt;workspace&gt;"
+    lock_address   = "https://terrarium.example/lock/&lt;workspace&gt;"
+    unlock_address = "https://terrarium.example/lock/&lt;workspace&gt;"
+    username       = "alice"
+    password       = "your-password-or-api-token"
+  }
+}</pre></div>
+
+<p class="dim">Replace <code>&lt;workspace&gt;</code> with any name you like — it can contain slashes, e.g. <code>infra/prod</code>.
+Terrarium creates it automatically on first push. Use <a href="/tokens">API tokens</a> instead of your password when possible.</p>
+
+<h2>2 — Provider registry</h2>
+<p class="dim">Terrarium is a full Terraform provider registry. Push a provider binary and source it directly.</p>
+
+<p><strong>Push a provider</strong> (one platform at a time):</p>
+<div class="panel"><pre data-url>curl -u alice:token \
+  -X POST "https://terrarium.example/registry/providers/&lt;namespace&gt;/&lt;type&gt;/&lt;version&gt;/&lt;os&gt;/&lt;arch&gt;" \
+  --data-binary @terraform-provider-&lt;type&gt;_&lt;version&gt;_&lt;os&gt;_&lt;arch&gt;.zip</pre></div>
+
+<p class="dim">Example: push hashicorp/null 3.2.0 for linux/amd64:</p>
+<div class="panel"><pre data-url>curl -u alice:token \
+  -X POST "https://terrarium.example/registry/providers/hashicorp/null/3.2.0/linux/amd64" \
+  --data-binary @terraform-provider-null_3.2.0_linux_amd64.zip</pre></div>
+
+<p><strong>Upload docs</strong> (Markdown, shown on the registry detail page):</p>
+<div class="panel"><pre data-url>curl -u alice:token \
+  -X PUT "https://terrarium.example/registry/providers/hashicorp/null/3.2.0/docs" \
+  -d '# Null Provider
+Creates and manages null resources useful for testing.'</pre></div>
+
+<p><strong>Source from this registry</strong> in your Terraform config:</p>
+<div class="panel"><pre data-url>terraform {
+  required_providers {
+    null = {
+      source  = "terrarium.example/hashicorp/null"
+      version = "3.2.0"
+    }
+  }
+}</pre></div>
+
+<p class="dim">The service discovery endpoint (<code>/.well-known/terraform.json</code>) tells OpenTofu where to find the provider API automatically when the hostname matches.</p>
+
+<h2>3 — Provider mirror (recommended for air-gapped or team setups)</h2>
+<p class="dim">Configure OpenTofu to pull providers from terrarium instead of the internet.
+Because OpenTofu requires HTTPS for network mirrors, use the <strong>filesystem mirror</strong> approach locally
+or point a real HTTPS URL at terrarium in production.</p>
+
+<p><strong>Step 1 — Mirror a provider from the upstream registry:</strong></p>
+<div class="panel"><pre data-url>curl -u alice:token \
+  -X POST "https://terrarium.example/registry/mirror" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "namespace": "hashicorp",
+    "type": "null",
+    "versions": ["3.2.0"],
+    "platforms": [
+      {"os": "linux",  "arch": "amd64"},
+      {"os": "darwin", "arch": "arm64"}
+    ]
+  }'</pre></div>
+
+<p class="dim">Omit <code>versions</code> to mirror all available versions. Omit <code>platforms</code> to mirror the five most common ones.</p>
+
+<p><strong>Step 2 — Configure OpenTofu to use terrarium as a network mirror</strong> (requires HTTPS on the terrarium server):</p>
+<div class="panel"><pre data-url># ~/.tofurc  (or TF_CLI_CONFIG_FILE)
+provider_installation {
+  network_mirror {
+    url     = "https://terrarium.example/registry/mirror/"
+    include = ["registry.terraform.io/hashicorp/*"]
+  }
+  direct {
+    exclude = ["registry.terraform.io/hashicorp/*"]
+  }
+}</pre></div>
+
+<p><strong>Alternatively — filesystem mirror</strong> (works over plain HTTP, good for local dev):</p>
+<div class="panel"><pre data-url># Download the provider from terrarium
+mkdir -p /tmp/mirror/registry.terraform.io/hashicorp/null
+curl -u alice:token \
+  "https://terrarium.example/registry/providers/hashicorp/null/3.2.0/linux/amd64/zip" \
+  -o /tmp/mirror/registry.terraform.io/hashicorp/null/terraform-provider-null_3.2.0_linux_amd64.zip
+
+# ~/.tofurc
+provider_installation {
+  filesystem_mirror {
+    path    = "/tmp/mirror"
+    include = ["registry.terraform.io/hashicorp/null"]
+  }
+  direct {
+    exclude = ["registry.terraform.io/hashicorp/null"]
+  }
+}</pre></div>
+
+<h2>4 — terra CLI</h2>
+<p class="dim">The <code>terra</code> binary wraps OpenTofu with a few extra terrarium-aware commands.</p>
+<div class="panel"><pre>terra serve                          # start the server (reads TERRARIUM_DATA)
+terra user add &lt;username&gt; &lt;pass&gt;   # create a user
+terra user list                      # list users
+terra user passwd &lt;username&gt;        # change password
+terra login                          # save credentials to ~/.config/terrarium/config.toml
+
+# All tofu commands pass through unchanged:
+terra init / plan / apply / destroy / ...
+
+terra remote state list              # list remote workspaces
+terra remote state get &lt;name&gt;       # inspect a state
+terra remote state versions &lt;name&gt;  # list saved versions
+terra remote state diff &lt;name&gt; 1 2  # diff two versions
+terra remote lock list               # show active locks
+terra remote webhook add &lt;ws&gt; &lt;url&gt; # register a webhook</pre></div>
+
+<h2>5 — Authentication</h2>
+<p class="dim">All API endpoints (state, lock, registry upload) accept either:</p>
+<ul style="padding-left:20px;line-height:2">
+  <li><strong>HTTP Basic Auth</strong> — username + password (used by the Terraform backend directly)</li>
+  <li><strong>Bearer token</strong> — create one on the <a href="/tokens">Tokens page</a>, pass as <code>Authorization: Bearer &lt;token&gt;</code></li>
+</ul>
+<p class="dim">Read-only registry endpoints (version list, download info, network mirror) are public — no auth needed.
+The web UI uses a session cookie set at login.</p>
+
+<h2>6 — Environment variables</h2>
+<div class="panel"><pre>TERRARIUM_DATA     # server data directory (default: current dir)
+TERRARIUM_TLS      # set to 1 to mark session cookies Secure (use behind TLS)
+TERRARIUM_URL      # client: server URL
+TERRARIUM_USER     # client: username
+TERRARIUM_PASSWORD # client: password
+TERRARIUM_CONFIG   # client: path to config file</pre></div>
+"#;
+
+    page("Help", user.as_deref(), body)
 }
