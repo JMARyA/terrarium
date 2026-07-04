@@ -19,6 +19,8 @@
 
 use std::io::Read as _;
 use std::path::PathBuf;
+use std::sync::Arc;
+use tokio::sync::RwLock;
 
 use axum::{
     Json,
@@ -34,6 +36,35 @@ use sha2::{Digest, Sha256};
 
 use crate::AppState;
 use crate::auth::AuthUser;
+
+// ── Mirror status ──────────────────────────────────────────────────────────
+
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct ProviderSyncStatus {
+    pub ok: usize,
+    pub errors: usize,
+    pub last_errors: Vec<String>,
+    pub last_synced: Option<u64>,
+}
+
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct MirrorStatus {
+    pub last_sync_started: Option<u64>,
+    pub last_sync_finished: Option<u64>,
+    pub running: bool,
+    pub total_ok: usize,
+    pub total_errors: usize,
+    pub providers: std::collections::HashMap<String, ProviderSyncStatus>,
+}
+
+pub type MirrorStatusRef = Arc<RwLock<MirrorStatus>>;
+
+fn unix_now() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
+}
 
 // ── Storage ────────────────────────────────────────────────────────────────
 
@@ -447,6 +478,12 @@ pub async fn perform_mirror(app: &AppState, req: MirrorRequest) -> (Vec<String>,
 
     for ver in &want_versions {
         for p in &platforms {
+            // Skip artifacts already in the store (idempotent re-runs)
+            if app.registry.get_sha256(ns, tp, ver, &p.os, &p.arch).is_some() {
+                tracing::debug!("⏭ {ns}/{tp} {ver} {}_{} already stored", p.os, p.arch);
+                continue;
+            }
+
             let dl_url = format!(
                 "https://registry.terraform.io/v1/providers/{ns}/{tp}/{ver}/download/{}/{}",
                 p.os, p.arch
@@ -458,7 +495,10 @@ pub async fn perform_mirror(app: &AppState, req: MirrorRequest) -> (Vec<String>,
                 Ok(r) if r.status().is_success() => r.json::<Value>().await.ok(),
                 _ => None,
             };
-            let Some(info) = info else { continue; };
+            let Some(info) = info else {
+                tracing::debug!("⏭ {ns}/{tp} {ver} {}_{}: not available upstream", p.os, p.arch);
+                continue;
+            };
             let Some(durl) = info["download_url"].as_str() else { continue; };
 
             match client.get(durl).header("User-Agent", "terrarium-mirror/1.0").send().await {
@@ -492,8 +532,13 @@ pub async fn perform_mirror(app: &AppState, req: MirrorRequest) -> (Vec<String>,
         }
     }
 
-    tracing::info!("🪞 Mirror {ns}/{tp}: {} ok, {} errors", mirrored.len(), errors.len());
     (mirrored, errors)
+}
+
+/// `GET /registry/status`
+pub async fn registry_status(State(app): State<AppState>) -> Json<Value> {
+    let s = app.mirror_status.read().await;
+    Json(serde_json::to_value(&*s).unwrap_or(json!({})))
 }
 
 /// `POST /registry/mirror`
@@ -508,21 +553,80 @@ pub async fn mirror_upstream(
     Ok(Json(json!({ "mirrored": mirrored, "errors": errors })))
 }
 
-/// Run all mirrors listed in `mirrors.json` inside the data directory.
-/// Called on startup and optionally repeated on a configurable interval.
-pub async fn run_auto_mirrors(app: AppState, mirrors_path: std::path::PathBuf) {
+/// Run all mirrors listed in `mirrors.json`. Returns the total error count.
+/// Called on startup (with retries) and on each periodic interval tick.
+pub async fn run_auto_mirrors(app: AppState, mirrors_path: std::path::PathBuf) -> usize {
     let content = match std::fs::read_to_string(&mirrors_path) {
         Ok(s) => s,
-        Err(e) => { tracing::warn!("Cannot read mirrors.json: {e}"); return; }
+        Err(e) => { tracing::warn!("Cannot read mirrors.json: {e}"); return 0; }
     };
-    let mirrors: Vec<MirrorRequest> = match serde_json::from_str(&content) {
+    let raw: Vec<MirrorRequest> = match serde_json::from_str(&content) {
         Ok(v) => v,
-        Err(e) => { tracing::warn!("Invalid mirrors.json: {e}"); return; }
+        Err(e) => { tracing::warn!("Invalid mirrors.json: {e}"); return 0; }
     };
-    tracing::info!("🔄 Auto-mirroring {} provider(s)", mirrors.len());
-    for req in mirrors {
-        perform_mirror(&app, req).await;
+
+    // Validate and deduplicate
+    let mut seen = std::collections::HashSet::new();
+    let mirrors: Vec<MirrorRequest> = raw.into_iter().filter(|req| {
+        if req.namespace.is_empty() || req.type_.is_empty() {
+            tracing::warn!("mirrors.json: skipping entry with empty namespace or type");
+            return false;
+        }
+        let key = format!("{}/{}", req.namespace, req.type_);
+        if !seen.insert(key.clone()) {
+            tracing::warn!("mirrors.json: duplicate entry {key}, skipping");
+            return false;
+        }
+        true
+    }).collect();
+
+    let started = unix_now();
+    {
+        let mut s = app.mirror_status.write().await;
+        s.running = true;
+        s.last_sync_started = Some(started);
     }
+
+    tracing::info!("🔄 Auto-mirroring {} provider(s)", mirrors.len());
+    let mut total_ok = 0usize;
+    let mut total_err = 0usize;
+
+    for req in mirrors {
+        let (ns, tp) = (req.namespace.clone(), req.type_.clone());
+        let (mirrored, errors) = perform_mirror(&app, req).await;
+        let ok = mirrored.len();
+        let err = errors.len();
+        total_ok += ok;
+        total_err += err;
+
+        if errors.is_empty() {
+            tracing::info!("🪞 {ns}/{tp}: {ok} mirrored");
+        } else {
+            tracing::warn!("🪞 {ns}/{tp}: {ok} ok, {err} error(s): {}", errors.join("; "));
+        }
+
+        let now = unix_now();
+        let mut s = app.mirror_status.write().await;
+        let pstatus = s.providers.entry(format!("{ns}/{tp}")).or_default();
+        pstatus.ok += ok;
+        pstatus.errors += err;
+        if !errors.is_empty() {
+            pstatus.last_errors = errors;
+        }
+        pstatus.last_synced = Some(now);
+    }
+
+    let finished = unix_now();
+    {
+        let mut s = app.mirror_status.write().await;
+        s.running = false;
+        s.last_sync_finished = Some(finished);
+        s.total_ok += total_ok;
+        s.total_errors += total_err;
+    }
+
+    tracing::info!("✅ mirror sync done: {total_ok} artifact(s), {total_err} error(s)");
+    total_err
 }
 
 async fn fetch_provider_source(client: &reqwest::Client, ns: &str, tp: &str) -> Option<String> {

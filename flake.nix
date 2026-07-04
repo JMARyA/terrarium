@@ -78,6 +78,7 @@
           tag = "latest-${pkgs.stdenv.hostPlatform.linuxArch}";
           contents = [
             terrarium
+            pkgs.cacert
           ];
           config = {
             Cmd = [
@@ -85,6 +86,10 @@
               "serve"
             ];
             WorkingDir = "/app";
+            Env = [
+              "SSL_CERT_FILE=/etc/ssl/certs/ca-bundle.crt"
+              "SSL_CERT_DIR=/etc/ssl/certs"
+            ];
           };
 
           fakeRootCommands = ''
@@ -98,7 +103,7 @@
           enableFakechroot = true;
         };
 
-        nixosTest = import ./nixos/test.nix { inherit pkgs nixosModule terrarium; };
+        nixosTest = import ./nixos/test.nix { inherit pkgs nixosModule terrarium dockerImage; };
       in
       {
         checks = {

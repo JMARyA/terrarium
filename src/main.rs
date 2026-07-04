@@ -36,6 +36,7 @@ pub struct AppState {
     #[allow(dead_code)]
     tofu: Option<TofuBinary>,
     pub registry: registry::RegistryStore,
+    pub mirror_status: registry::MirrorStatusRef,
 }
 
 impl axum::extract::FromRef<AppState> for authur::UserDB<authur::vfs::PhysicalFS> {
@@ -604,6 +605,7 @@ async fn serve(tofu_binary: Option<TofuBinary>) {
         webhooks: WebhookStore::new(data.join("webhooks.json")),
         tofu: tofu_binary,
         registry: registry::RegistryStore::new(data.join("registry")),
+        mirror_status: std::sync::Arc::new(tokio::sync::RwLock::new(registry::MirrorStatus::default())),
     };
 
     let app = Router::new()
@@ -634,6 +636,7 @@ async fn serve(tofu_binary: Option<TofuBinary>) {
         .route("/registry/providers/{namespace}/{type}/{version}/docs", axum::routing::put(registry::upload_docs))
         .route("/registry/mirror", post(registry::mirror_upstream))
         .route("/registry/mirror/{*path}", get(registry::network_mirror))
+        .route("/registry/status", get(registry::registry_status))
         // ── Web UI ──
         .route("/", get(ui::dashboard))
         .route("/login", get(ui::login_page).post(ui::login_submit))
@@ -662,10 +665,21 @@ async fn serve(tofu_binary: Option<TofuBinary>) {
         tokio::spawn(async move {
             // Small delay so the server is fully up before the first mirror run.
             tokio::time::sleep(std::time::Duration::from_secs(5)).await;
-            registry::run_auto_mirrors(state_clone.clone(), path_clone.clone()).await;
+
+            // Initial sync with backoff retries on transient failures.
+            let mut errs = registry::run_auto_mirrors(state_clone.clone(), path_clone.clone()).await;
+            for delay in [30u64, 120] {
+                if errs == 0 { break; }
+                tracing::warn!("Mirror had errors, retrying in {delay}s");
+                tokio::time::sleep(std::time::Duration::from_secs(delay)).await;
+                errs = registry::run_auto_mirrors(state_clone.clone(), path_clone.clone()).await;
+            }
+
             if let Some(secs) = interval_secs {
                 let mut ticker = tokio::time::interval(std::time::Duration::from_secs(secs));
-                ticker.tick().await; // consume the immediate tick
+                // Skip missed ticks rather than letting a slow run pile up
+                ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+                ticker.tick().await; // consume the immediate first tick
                 loop {
                     ticker.tick().await;
                     registry::run_auto_mirrors(state_clone.clone(), path_clone.clone()).await;

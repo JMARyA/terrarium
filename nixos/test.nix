@@ -1,5 +1,5 @@
-# Called as `import ./nixos/test.nix { inherit pkgs nixosModule terrarium; }`
-{ pkgs, nixosModule, terrarium }:
+# Called as `import ./nixos/test.nix { inherit pkgs nixosModule terrarium dockerImage; }`
+{ pkgs, nixosModule, terrarium, dockerImage }:
 pkgs.testers.runNixOSTest {
   name = "terrarium";
 
@@ -68,7 +68,24 @@ pkgs.testers.runNixOSTest {
       '';
     };
 
-  testScript = ''
+  # Second node tests the published container image. Runs the same binary but
+  # through Docker so we validate the image build (CA certs, env wiring, etc.).
+  nodes.container =
+    { config, pkgs, ... }:
+    {
+      virtualisation.docker.enable = true;
+      virtualisation.diskSize = 4096;
+      virtualisation.memorySize = 1024;
+      environment.systemPackages = [ pkgs.docker pkgs.curl ];
+    };
+
+  testScript = let
+    imageTag = "terrarium:latest-${pkgs.stdenv.hostPlatform.linuxArch}";
+  in ''
+    import json
+
+    # ── NixOS module tests ──────────────────────────────────────────────────
+
     server.start()
     server.wait_for_unit("terrarium.service")
     server.wait_for_open_port(8080)
@@ -330,5 +347,76 @@ pkgs.testers.runNixOSTest {
     out = server.succeed("curl -sfL http://localhost:8080/registry/test/myprovider")
     assert "1.0.0" in out, f"version missing from provider detail page: {out}"
     assert "My Provider" in out, f"docs missing from provider detail page: {out}"
+
+    # Mirror status endpoint — no mirrors configured, should return idle status
+    out = server.succeed("curl -sf http://localhost:8080/registry/status")
+    status = json.loads(out)
+    assert "running" in status, f"/registry/status missing 'running' field: {out}"
+    assert status["running"] == False, f"/registry/status should be idle: {out}"
+
+    # ── Container image tests ───────────────────────────────────────────────
+    # These run in a separate VM that loads the Docker image, exercising the
+    # container path that most production deployments use.
+
+    container.start()
+    container.wait_for_unit("docker.service")
+    container.succeed("docker load < ${dockerImage}")
+
+    # Image must declare SSL_CERT_FILE and SSL_CERT_DIR so OpenSSL can reach
+    # the CA bundle inside the scratch container (the primary bug fix).
+    env_json = container.succeed(
+        "docker inspect ${imageTag} --format '{{json .Config.Env}}'"
+    )
+    envs = json.loads(env_json)
+    assert any("SSL_CERT_FILE" in e for e in envs), \
+        f"SSL_CERT_FILE missing from image config (CA cert fix): {envs}"
+    assert any("SSL_CERT_DIR" in e for e in envs), \
+        f"SSL_CERT_DIR missing from image config: {envs}"
+
+    # Start the container
+    container.succeed("mkdir -p /tmp/terra-data")
+    container.succeed(
+        "docker run -d -p 8080:8080 --name terra "
+        "-e TERRARIUM_DATA=/app -e RUST_LOG=info "
+        "-v /tmp/terra-data:/app "
+        "${imageTag}"
+    )
+    container.wait_until_succeeds(
+        "curl -sf http://localhost:8080/.well-known/terraform.json",
+        timeout=30,
+    )
+
+    # CA cert bundle must be present on disk inside the running container.
+    # The image has no shell or coreutils, so copy it out and test on the host.
+    container.succeed("docker cp terra:/etc/ssl/certs/ca-bundle.crt /tmp/ca-bundle.crt")
+    container.succeed("test -s /tmp/ca-bundle.crt")
+
+    # Add an admin user and run basic state-backend assertions against the
+    # container — same happy-path as the module node above.
+    container.succeed("docker exec terra /bin/terra user add admin secret")
+
+    out = container.succeed("curl -sf -u admin:secret http://localhost:8080/state")
+    assert out.strip() == "[]", f"container: expected empty state list, got: {out}"
+
+    container.fail("curl -sf http://localhost:8080/state")
+
+    container.succeed(
+        "printf '%s' "
+        "'{\"version\":4,\"terraform_version\":\"1.9.0\","
+        "\"serial\":1,\"lineage\":\"test\",\"outputs\":{},\"resources\":[]}'"
+        " > /tmp/ctr-state.json"
+    )
+    container.succeed(
+        "curl -sf -u admin:secret -X POST http://localhost:8080/state/test/state"
+        " -H 'Content-Type: application/json' -d @/tmp/ctr-state.json"
+    )
+    out = container.succeed("curl -sf -u admin:secret http://localhost:8080/state")
+    assert "test/state" in out, f"container: state not in listing: {out}"
+
+    # Mirror status endpoint — idle since no mirrors.json in /tmp/terra-data
+    out = container.succeed("curl -sf http://localhost:8080/registry/status")
+    status = json.loads(out)
+    assert "running" in status, f"container: /registry/status missing 'running': {out}"
+    assert status["running"] == False, f"container: /registry/status should be idle: {out}"
   '';
 }
