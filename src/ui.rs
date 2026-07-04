@@ -98,6 +98,26 @@ fn esc(s: &str) -> String {
         .replace('"', "&quot;")
 }
 
+fn render_markdown(md: &str) -> String {
+    let mut opts = pulldown_cmark::Options::empty();
+    opts.insert(pulldown_cmark::Options::ENABLE_TABLES);
+    opts.insert(pulldown_cmark::Options::ENABLE_STRIKETHROUGH);
+    let parser = pulldown_cmark::Parser::new_ext(md, opts);
+    let mut out = String::new();
+    pulldown_cmark::html::push_html(&mut out, parser);
+    out
+}
+
+/// Strip YAML frontmatter (`---…---`) from the start of a markdown file.
+fn strip_frontmatter(md: &str) -> &str {
+    let s = if md.starts_with("---\r\n") { &md[5..] } else if md.starts_with("---\n") { &md[4..] } else { return md; };
+    if let Some(pos) = s.find("\n---") {
+        let after = &s[pos + 4..];
+        return after.trim_start_matches("\r\n").trim_start_matches('\n');
+    }
+    md
+}
+
 const STYLE: &str = r#"
 :root { --bg:#0f1115; --panel:#171a21; --line:#262b36; --fg:#d7dce5; --dim:#8a93a6;
         --green:#5ec27a; --red:#e06c75; --yellow:#e5c07b; --cyan:#56b6c2; --accent:#7da9ff; }
@@ -124,6 +144,36 @@ pre.diff { background:var(--bg); border:1px solid var(--line); border-radius:6px
 .token { background:var(--bg); border:1px dashed var(--yellow); border-radius:6px; padding:12px; word-break:break-all; color:var(--yellow); }
 .err { color:var(--red); margin:8px 0; }
 form.inline { display:flex; gap:10px; align-items:center; flex-wrap:wrap; }
+/* Docs layout */
+.docs-layout { display:flex; gap:0; }
+.docs-sidebar { width:230px; flex-shrink:0; border-right:1px solid var(--line); padding:20px 0; min-height:calc(100vh - 57px); }
+.docs-sidebar .ds-provider { font-weight:bold; padding:0 16px 12px; border-bottom:1px solid var(--line); margin-bottom:8px; }
+.docs-sidebar .ds-provider a { color:var(--fg); }
+.docs-sidebar select { display:block; width:calc(100% - 32px); margin:8px 16px 12px; }
+.docs-sidebar .ds-cat { padding:10px 16px 4px; font-size:11px; letter-spacing:.07em; text-transform:uppercase; color:var(--dim); }
+.docs-sidebar .ds-link { padding:3px 16px; }
+.docs-sidebar .ds-link a { display:block; color:var(--dim); font-size:13px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.docs-sidebar .ds-link a:hover { color:var(--fg); text-decoration:none; }
+.docs-sidebar .ds-link a.cur { color:var(--accent); font-weight:bold; }
+.docs-main { flex:1; min-width:0; padding:28px 36px; }
+/* Markdown rendering */
+.md h1 { font-size:22px; margin:0 0 16px; border-bottom:1px solid var(--line); padding-bottom:10px; }
+.md h2 { font-size:16px; color:var(--fg); margin:28px 0 10px; text-transform:none; letter-spacing:0; border-bottom:1px solid var(--line); padding-bottom:6px; }
+.md h3 { font-size:14px; color:var(--fg); margin:20px 0 8px; }
+.md h4 { font-size:13px; color:var(--dim); margin:14px 0 6px; }
+.md p { margin:10px 0; line-height:1.7; }
+.md code { background:var(--panel); border:1px solid var(--line); border-radius:3px; padding:1px 5px; font:inherit; font-size:12px; }
+.md pre { background:var(--panel); border:1px solid var(--line); border-radius:6px; padding:14px 16px; overflow-x:auto; margin:12px 0; }
+.md pre code { background:none; border:none; padding:0; font-size:13px; }
+.md ul, .md ol { padding-left:22px; margin:10px 0; line-height:1.8; }
+.md li { margin:2px 0; }
+.md blockquote { border-left:3px solid var(--accent); margin:12px 0; padding:4px 16px; color:var(--dim); }
+.md table { width:100%; border-collapse:collapse; margin:14px 0; }
+.md th { background:var(--panel); color:var(--dim); font-weight:normal; }
+.md th, .md td { text-align:left; padding:7px 12px; border:1px solid var(--line); font-size:13px; }
+.md a { color:var(--accent); }
+.md hr { border:none; border-top:1px solid var(--line); margin:20px 0; }
+.md strong { color:var(--fg); }
 "#;
 
 fn page(title: &str, user: Option<&str>, body: &str) -> Html<String> {
@@ -142,6 +192,30 @@ fn page(title: &str, user: Option<&str>, body: &str) -> Html<String> {
 <title>{} — terrarium</title><style>{}</style></head><body>
 <header><span class="brand">🌱 terrarium</span>{}</header>
 <main>{}</main></body></html>"#,
+        esc(title),
+        STYLE,
+        nav,
+        body
+    ))
+}
+
+/// Full-width page for the docs layout (no `max-width` on `<main>`).
+fn page_docs(title: &str, user: Option<&str>, body: &str) -> Html<String> {
+    let nav = match user {
+        Some(u) => format!(
+            r#"<nav><a href="/">Workspaces</a><a href="/registry">Registry</a><a href="/tokens">Tokens</a><a href="/help">Help</a></nav>
+               <span class="spacer"></span>
+               <span class="dim">{}</span>
+               <form method="post" action="/logout"><button type="submit">logout</button></form>"#,
+            esc(u)
+        ),
+        None => r#"<nav><a href="/registry">Registry</a><a href="/help">Help</a></nav>"#.to_string(),
+    };
+    Html(format!(
+        r#"<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>{} — terrarium</title><style>{}</style></head><body>
+<header><span class="brand">🌱 terrarium</span>{}</header>
+<div style="min-height:calc(100vh - 57px)">{}</div></body></html>"#,
         esc(title),
         STYLE,
         nav,
@@ -1001,7 +1075,7 @@ pub async fn registry_page(
     let mut rows = String::new();
     for (ns, tp) in &providers {
         let versions = app.registry.list_versions(ns, tp);
-        let latest = versions.last().map(|s| s.as_str()).unwrap_or("-");
+        let latest = versions.last().cloned().unwrap_or_default();
         let all_platforms: Vec<_> = versions.iter().flat_map(|v| app.registry.list_platforms(ns, tp, v)).collect();
         let mut seen = std::collections::BTreeSet::new();
         let plats: Vec<String> = all_platforms.into_iter()
@@ -1010,9 +1084,11 @@ pub async fn registry_page(
                 seen.insert(k.clone()).then_some(k)
             })
             .collect();
+        let has_docs = !latest.is_empty() && app.registry.has_docs(ns, tp, &latest);
+        let docs_badge = if has_docs { r#" <span class="badge" style="color:var(--green);border-color:var(--green)">docs</span>"# } else { "" };
         rows.push_str(&format!(
             r#"<tr>
-                 <td><a href="/registry/{ns}/{tp}">{ns}/<strong>{tp}</strong></a></td>
+                 <td><a href="/registry/{ns}/{tp}">{ns}/<strong>{tp}</strong></a>{docs_badge}</td>
                  <td class="cyan">{latest}</td>
                  <td class="dim">{}</td>
                  <td class="dim">{}</td>
@@ -1043,7 +1119,7 @@ pub async fn registry_page(
     page("Registry", user.as_deref(), &body).into_response()
 }
 
-/// `GET /registry/{namespace}/{type}` — detail page for one provider.
+/// `GET /registry/{namespace}/{type}` — redirect to latest version docs.
 pub async fn provider_page(
     State(app): State<AppState>,
     Path((ns, tp)): Path<(String, String)>,
@@ -1056,58 +1132,163 @@ pub async fn provider_page(
             &format!(r#"<h1>{}/{}</h1><div class="panel dim">No such provider.</div>"#, esc(&ns), esc(&tp))
         )).into_response();
     }
+    let latest = versions.last().unwrap();
+    Redirect::to(&format!("/registry/{ns}/{tp}/{latest}/docs")).into_response()
+}
 
-    // Docs from latest version that has them
-    let docs_html = versions.iter().rev()
-        .find_map(|v| app.registry.get_meta(&ns, &tp, v).and_then(|m| m.docs))
-        .map(|md| format!(
-            r#"<h2>Documentation</h2><div class="panel"><pre style="white-space:pre-wrap;word-break:break-word">{}</pre></div>"#,
-            esc(&md)
-        ))
-        .unwrap_or_default();
-
-    // Version table
-    let mut rows = String::new();
-    for ver in versions.iter().rev() {
-        let platforms = app.registry.list_platforms(&ns, &tp, ver);
-        let plats: Vec<String> = platforms.iter().map(|p| format!("{}_{}", p.os, p.arch)).collect();
-        let meta = app.registry.get_meta(&ns, &tp, ver).unwrap_or_default();
-        rows.push_str(&format!(
-            r#"<tr>
-                 <td class="cyan">{ver}</td>
-                 <td class="dim">{}</td>
-                 <td class="dim">{}</td>
-               </tr>"#,
-            esc(&plats.join(", ")),
-            esc(&meta.protocols.join(", ")),
-        ));
+/// Common inner renderer for all provider doc pages.
+fn render_provider_doc_page(
+    app: &AppState,
+    ns: &str,
+    tp: &str,
+    ver: &str,
+    doc_path: &str, // "index" | "resources/foo" | "data-sources/bar" | "guides/baz"
+    user: Option<&str>,
+) -> Response {
+    let all_versions = app.registry.list_versions(ns, tp);
+    if all_versions.is_empty() {
+        return (StatusCode::NOT_FOUND, page("Not found", user,
+            &format!(r#"<h1>{ns}/{tp}</h1><div class="panel dim">Provider not found.</div>"#)
+        )).into_response();
     }
 
-    let body = format!(
-        r#"<h1><span class="dim">{ns}/</span>{tp}</h1>
-           <h2>Versions</h2>
-           <div class="panel" style="padding:0">
-             <table>
-               <thead><tr><th>Version</th><th>Platforms</th><th>Protocols</th></tr></thead>
-               <tbody>{rows}</tbody>
-             </table>
-           </div>
-           <h2>Usage</h2>
-           <div class="panel">
-             <pre>terraform {{
+    // Build sidebar
+    let resources    = app.registry.list_doc_category(ns, tp, ver, "resources");
+    let data_sources = app.registry.list_doc_category(ns, tp, ver, "data-sources");
+    let guides       = app.registry.list_doc_category(ns, tp, ver, "guides");
+
+    let ver_opts: String = all_versions.iter().rev().map(|v| {
+        format!(r#"<option value="{v}"{}>v{v}</option>"#,
+            if v == ver { " selected" } else { "" })
+    }).collect();
+
+    let sidebar_link = |path: &str, label: &str| -> String {
+        let href = if path == "index" {
+            format!("/registry/{ns}/{tp}/{ver}/docs")
+        } else {
+            format!("/registry/{ns}/{tp}/{ver}/docs/{path}")
+        };
+        let cur = if path == doc_path { " cur" } else { "" };
+        format!(r#"<div class="ds-link"><a href="{href}" class="{cur}">{}</a></div>"#, esc(label))
+    };
+
+    let mut sidebar = format!(
+        r#"<div class="docs-sidebar">
+        <div class="ds-provider"><a href="/registry/{ns}/{tp}">{ns}/<strong>{tp}</strong></a></div>
+        <select onchange="window.location='/registry/{ns}/{tp}/'+this.value+'/docs'">{ver_opts}</select>
+        {}"#,
+        sidebar_link("index", "Overview"),
+    );
+
+    if !resources.is_empty() {
+        sidebar.push_str(r#"<div class="ds-cat">Resources</div>"#);
+        for r in &resources {
+            sidebar.push_str(&sidebar_link(&format!("resources/{r}"), r));
+        }
+    }
+    if !data_sources.is_empty() {
+        sidebar.push_str(r#"<div class="ds-cat">Data Sources</div>"#);
+        for ds in &data_sources {
+            sidebar.push_str(&sidebar_link(&format!("data-sources/{ds}"), ds));
+        }
+    }
+    if !guides.is_empty() {
+        sidebar.push_str(r#"<div class="ds-cat">Guides</div>"#);
+        for g in &guides {
+            sidebar.push_str(&sidebar_link(&format!("guides/{g}"), g));
+        }
+    }
+    sidebar.push_str("</div>");
+
+    // Main content
+    let md_content = if doc_path == "index" {
+        app.registry.get_doc_file(ns, tp, ver, "index")
+    } else {
+        app.registry.get_doc_file(ns, tp, ver, doc_path)
+    };
+
+    let main_html = match md_content {
+        Some(md) => {
+            let body = strip_frontmatter(&md);
+            format!(r#"<div class="docs-main md">{}</div>"#, render_markdown(body))
+        }
+        None if doc_path == "index" => {
+            // No docs uploaded — show version table
+            let mut rows = String::new();
+            for v in all_versions.iter().rev() {
+                let platforms = app.registry.list_platforms(ns, tp, v);
+                let plats: Vec<String> = platforms.iter().map(|p| format!("{}_{}", p.os, p.arch)).collect();
+                let meta = app.registry.get_meta(ns, tp, v).unwrap_or_default();
+                let has_docs = app.registry.has_docs(ns, tp, v);
+                let docs_link = if has_docs {
+                    format!(r#" <a href="/registry/{ns}/{tp}/{v}/docs" class="dim" style="font-size:12px">docs</a>"#)
+                } else { String::new() };
+                rows.push_str(&format!(
+                    r#"<tr><td class="cyan"><a href="/registry/{ns}/{tp}/{v}/docs">{v}</a>{docs_link}</td>
+                       <td class="dim">{}</td><td class="dim">{}</td></tr>"#,
+                    esc(&plats.join(", ")),
+                    esc(&meta.protocols.join(", ")),
+                ));
+            }
+            format!(
+                r#"<div class="docs-main">
+                <h1 style="font-size:22px;margin-bottom:6px"><span class="dim">{ns}/</span>{tp}</h1>
+                <p class="dim" style="margin-bottom:24px">No documentation uploaded for this version.</p>
+                <h2>Versions</h2>
+                <div class="panel" style="padding:0"><table>
+                  <thead><tr><th>Version</th><th>Platforms</th><th>Protocols</th></tr></thead>
+                  <tbody>{rows}</tbody></table></div>
+                <h2>Usage</h2>
+                <div class="panel"><pre>terraform {{
   required_providers {{
     {tp} = {{
       source  = "&lt;registry-host&gt;/{ns}/{tp}"
-      version = "{latest}"
+      version = "{ver}"
     }}
   }}
-}}</pre>
-           </div>
-           <p class="dim">Network mirror: configure <code>url = "http://&lt;host&gt;/registry/mirror/"</code> in your CLI config.</p>
-           {docs_html}"#,
-        latest = versions.last().map(|s: &String| s.as_str()).unwrap_or(""),
-    );
-    page(&format!("{ns}/{tp}"), user.as_deref(), &body).into_response()
+}}</pre></div>
+                <p class="dim">Upload docs: <code>PUT /registry/providers/{ns}/{tp}/{ver}/docs</code>
+                   (ZIP from <code>terraform-plugin-docs</code> or plain Markdown)</p>
+                </div>"#
+            )
+        }
+        None => {
+            format!(
+                r#"<div class="docs-main"><div class="panel dim" style="margin-top:16px">
+                Page not found: <code>{}</code></div></div>"#,
+                esc(doc_path)
+            )
+        }
+    };
+
+    let title = if doc_path == "index" {
+        format!("{ns}/{tp}")
+    } else {
+        format!("{ns}/{tp} — {}", doc_path.split('/').next_back().unwrap_or(doc_path))
+    };
+
+    let body = format!(r#"<div class="docs-layout">{sidebar}{main_html}</div>"#);
+    page_docs(&title, user, &body).into_response()
+}
+
+/// `GET /registry/{namespace}/{type}/{version}/docs`
+pub async fn provider_docs_index(
+    State(app): State<AppState>,
+    Path((ns, tp, ver)): Path<(String, String, String)>,
+    maybe: MaybeUser,
+) -> Response {
+    let user = maybe.user().map(|u| u.username.clone());
+    render_provider_doc_page(&app, &ns, &tp, &ver, "index", user.as_deref())
+}
+
+/// `GET /registry/{namespace}/{type}/{version}/docs/{*path}`
+pub async fn provider_doc_page(
+    State(app): State<AppState>,
+    Path((ns, tp, ver, path)): Path<(String, String, String, String)>,
+    maybe: MaybeUser,
+) -> Response {
+    let user = maybe.user().map(|u| u.username.clone());
+    render_provider_doc_page(&app, &ns, &tp, &ver, &path, user.as_deref())
 }
 
 // ── Help page ────────────────────────────────────────────────────────────────

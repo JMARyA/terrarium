@@ -645,6 +645,8 @@ async fn serve(tofu_binary: Option<TofuBinary>) {
         .route("/tokens/{id}/revoke", post(ui::token_revoke))
         .route("/registry", get(ui::registry_page))
         .route("/registry/{namespace}/{type}", get(ui::provider_page))
+        .route("/registry/{namespace}/{type}/{version}/docs", get(ui::provider_docs_index))
+        .route("/registry/{namespace}/{type}/{version}/docs/{*path}", get(ui::provider_doc_page))
         .route("/help", get(ui::help_page))
         .with_state(state);
 

@@ -326,8 +326,8 @@ pkgs.testers.runNixOSTest {
     out = server.succeed("curl -sf http://localhost:8080/registry")
     assert "myprovider" in out, f"myprovider missing from registry UI: {out}"
 
-    # Web UI — provider detail page renders version and docs
-    out = server.succeed("curl -sf http://localhost:8080/registry/test/myprovider")
+    # Web UI — provider detail page redirects to docs; -L follows the redirect
+    out = server.succeed("curl -sfL http://localhost:8080/registry/test/myprovider")
     assert "1.0.0" in out, f"version missing from provider detail page: {out}"
     assert "My Provider" in out, f"docs missing from provider detail page: {out}"
   '';

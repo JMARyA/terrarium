@@ -17,6 +17,7 @@
 //!  4. **Upstream mirroring** — one POST triggers a fetch-and-cache of a
 //!     provider (or set of versions/platforms) from registry.terraform.io.
 
+use std::io::Read as _;
 use std::path::PathBuf;
 
 use axum::{
@@ -62,6 +63,75 @@ impl RegistryStore {
     fn version_dir(&self, ns: &str, tp: &str, ver: &str) -> PathBuf { self.provider_dir(ns, tp).join(ver) }
     fn platform_dir(&self, ns: &str, tp: &str, ver: &str, os: &str, arch: &str) -> PathBuf {
         self.version_dir(ns, tp, ver).join(format!("{os}_{arch}"))
+    }
+
+    fn docs_dir(&self, ns: &str, tp: &str, ver: &str) -> PathBuf {
+        self.version_dir(ns, tp, ver).join("docs")
+    }
+
+    pub fn has_docs(&self, ns: &str, tp: &str, ver: &str) -> bool {
+        self.docs_dir(ns, tp, ver).is_dir()
+    }
+
+    pub fn get_doc_file(&self, ns: &str, tp: &str, ver: &str, rel: &str) -> Option<String> {
+        let base = self.docs_dir(ns, tp, ver).join(rel);
+        for ext in &[".md", ".mdx"] {
+            let mut p = base.clone();
+            let mut name = p.file_name()?.to_string_lossy().into_owned();
+            name.push_str(ext);
+            p.set_file_name(name);
+            if let Ok(s) = std::fs::read_to_string(&p) { return Some(s); }
+        }
+        if let Ok(s) = std::fs::read_to_string(&base) { return Some(s); }
+        None
+    }
+
+    pub fn list_doc_category(&self, ns: &str, tp: &str, ver: &str, category: &str) -> Vec<String> {
+        let dir = self.docs_dir(ns, tp, ver).join(category);
+        let mut names: Vec<String> = std::fs::read_dir(&dir)
+            .into_iter().flatten()
+            .filter_map(|e| e.ok())
+            .filter(|e| e.path().is_file())
+            .filter_map(|e| {
+                let n = e.file_name().to_string_lossy().into_owned();
+                if n.ends_with(".md")  { Some(n[..n.len()-3].to_string()) }
+                else if n.ends_with(".mdx") { Some(n[..n.len()-4].to_string()) }
+                else { None }
+            })
+            .collect();
+        names.sort();
+        names
+    }
+
+    pub fn store_doc_file(&self, ns: &str, tp: &str, ver: &str, rel: &str, data: &[u8]) {
+        let dest = self.docs_dir(ns, tp, ver).join(rel);
+        if let Some(p) = dest.parent() { std::fs::create_dir_all(p).ok(); }
+        std::fs::write(dest, data).ok();
+    }
+
+    pub fn store_docs_bundle(&self, ns: &str, tp: &str, ver: &str, zip_bytes: &[u8]) -> Result<usize, String> {
+        let cursor = std::io::Cursor::new(zip_bytes);
+        let mut archive = zip::ZipArchive::new(cursor).map_err(|e| e.to_string())?;
+        let mut count = 0;
+        for i in 0..archive.len() {
+            let mut file = archive.by_index(i).map_err(|e| e.to_string())?;
+            if file.is_dir() { continue; }
+            let raw_name = file.name().to_string();
+            // Normalize: strip leading "docs/" prefix if present
+            let rel = raw_name.strip_prefix("docs/").unwrap_or(&raw_name).to_string();
+            let valid = matches!(rel.as_str(), "index.md" | "index.mdx")
+                || rel.starts_with("resources/")
+                || rel.starts_with("data-sources/")
+                || rel.starts_with("guides/")
+                || rel.starts_with("functions/")
+                || rel.starts_with("ephemeral-resources/");
+            if !valid { continue; }
+            let mut content = Vec::new();
+            file.read_to_end(&mut content).map_err(|e| e.to_string())?;
+            self.store_doc_file(ns, tp, ver, &rel, &content);
+            count += 1;
+        }
+        Ok(count)
     }
 
     pub fn list_providers(&self) -> Vec<(String, String)> {
@@ -282,19 +352,33 @@ pub async fn upload_provider(
 
 /// `PUT /registry/providers/{namespace}/{type}/{version}/docs`
 ///
-/// Replace the Markdown documentation for a provider version.
+/// Upload structured documentation for a provider version.
+///
+/// Body can be either:
+/// - A ZIP archive containing `docs/` in the `terraform-plugin-docs` layout:
+///   `docs/index.md`, `docs/resources/*.md`, `docs/data-sources/*.md`, etc.
+/// - Plain Markdown — stored as the provider overview (`index.md`).
 pub async fn upload_docs(
     _auth: AuthUser,
     State(app): State<AppState>,
     Path((ns, tp, ver)): Path<(String, String, String)>,
     body: Bytes,
-) -> StatusCode {
-    let Some(mut meta) = app.registry.get_meta(&ns, &tp, &ver) else {
-        return StatusCode::NOT_FOUND;
-    };
-    meta.docs = Some(String::from_utf8_lossy(&body).into_owned());
-    app.registry.save_meta(&ns, &tp, &ver, &meta);
-    StatusCode::OK
+) -> impl IntoResponse {
+    if body.is_empty() { return (StatusCode::BAD_REQUEST, "empty body").into_response(); }
+
+    if body.starts_with(b"PK\x03\x04") {
+        match app.registry.store_docs_bundle(&ns, &tp, &ver, &body) {
+            Ok(n) => {
+                tracing::info!("📄 Registry: docs bundle {ns}/{tp} {ver} ({n} files)");
+                StatusCode::OK.into_response()
+            }
+            Err(e) => (StatusCode::BAD_REQUEST, e).into_response(),
+        }
+    } else {
+        app.registry.store_doc_file(&ns, &tp, &ver, "index.md", &body);
+        tracing::info!("📄 Registry: docs index {ns}/{tp} {ver}");
+        StatusCode::OK.into_response()
+    }
 }
 
 // ── Serve binary ───────────────────────────────────────────────────────────
@@ -402,8 +486,92 @@ pub async fn mirror_upstream(
         }
     }
 
+    // Fetch docs from GitHub for each mirrored version.
+    if let Some(source_url) = fetch_provider_source(&client, ns, tp).await {
+        if let Some((owner, repo)) = parse_github_url(&source_url) {
+            for ver in &want_versions {
+                mirror_docs_from_github(&client, &app.registry, ns, tp, ver, &owner, &repo).await;
+            }
+        }
+    }
+
     tracing::info!("🪞 Mirror {ns}/{tp}: {} ok, {} errors", mirrored.len(), errors.len());
     Ok(Json(json!({ "mirrored": mirrored, "errors": errors })))
+}
+
+async fn fetch_provider_source(client: &reqwest::Client, ns: &str, tp: &str) -> Option<String> {
+    let info: Value = client
+        .get(format!("https://registry.terraform.io/v1/providers/{ns}/{tp}"))
+        .header("User-Agent", "terrarium-mirror/1.0")
+        .send().await.ok()?
+        .json().await.ok()?;
+    info["source"].as_str().map(String::from)
+}
+
+fn parse_github_url(url: &str) -> Option<(String, String)> {
+    let parts: Vec<&str> = url.trim_end_matches('/').rsplitn(3, '/').collect();
+    // rsplitn gives [repo, owner, prefix] in reverse
+    if parts.len() >= 2 {
+        Some((parts[1].to_string(), parts[0].to_string()))
+    } else {
+        None
+    }
+}
+
+async fn mirror_docs_from_github(
+    client: &reqwest::Client,
+    registry: &RegistryStore,
+    ns: &str,
+    tp: &str,
+    ver: &str,
+    owner: &str,
+    repo: &str,
+) {
+    let tag = format!("v{ver}");
+    let tree_url = format!(
+        "https://api.github.com/repos/{owner}/{repo}/git/trees/{tag}?recursive=1"
+    );
+    let tree: Value = match client
+        .get(&tree_url)
+        .header("User-Agent", "terrarium-mirror/1.0")
+        .send().await
+    {
+        Ok(r) if r.status().is_success() => match r.json().await { Ok(v) => v, Err(_) => return },
+        _ => return,
+    };
+
+    let doc_paths: Vec<String> = tree["tree"].as_array().unwrap_or(&vec![])
+        .iter()
+        .filter_map(|e| {
+            let path = e["path"].as_str()?;
+            let is_blob = e["type"].as_str() == Some("blob");
+            // Only the non-cdktf docs/ tree, .md or .mdx files
+            let is_doc = path.starts_with("docs/")
+                && !path.starts_with("docs/cdktf/")
+                && (path.ends_with(".md") || path.ends_with(".mdx"));
+            if is_blob && is_doc { Some(path.to_string()) } else { None }
+        })
+        .collect();
+
+    let mut count = 0;
+    for path in doc_paths {
+        let raw_url = format!(
+            "https://raw.githubusercontent.com/{owner}/{repo}/{tag}/{path}"
+        );
+        if let Ok(resp) = client.get(&raw_url)
+            .header("User-Agent", "terrarium-mirror/1.0")
+            .send().await
+        {
+            if resp.status().is_success() {
+                if let Ok(bytes) = resp.bytes().await {
+                    let rel = path.strip_prefix("docs/").unwrap_or(&path);
+                    registry.store_doc_file(ns, tp, ver, rel, &bytes);
+                    count += 1;
+                }
+            }
+        }
+    }
+    tracing::info!("📚 Docs {ns}/{tp} {ver}: {count} files from {owner}/{repo}@{tag}");
 }
 
 // ── Network Mirror Protocol ─────────────────────────────────────────────────
