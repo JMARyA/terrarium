@@ -648,7 +648,31 @@ async fn serve(tofu_binary: Option<TofuBinary>) {
         .route("/registry/{namespace}/{type}/{version}/docs", get(ui::provider_docs_index))
         .route("/registry/{namespace}/{type}/{version}/docs/{*path}", get(ui::provider_doc_page))
         .route("/help", get(ui::help_page))
-        .with_state(state);
+        .with_state(state.clone());
+
+    // Auto-mirror: spawn a background task if mirrors.json exists.
+    let mirrors_path = data.join("mirrors.json");
+    if mirrors_path.exists() {
+        let interval_secs: Option<u64> = std::env::var("TERRARIUM_MIRROR_INTERVAL")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .filter(|&n: &u64| n > 0);
+        let state_clone = state;
+        let path_clone  = mirrors_path.clone();
+        tokio::spawn(async move {
+            // Small delay so the server is fully up before the first mirror run.
+            tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+            registry::run_auto_mirrors(state_clone.clone(), path_clone.clone()).await;
+            if let Some(secs) = interval_secs {
+                let mut ticker = tokio::time::interval(std::time::Duration::from_secs(secs));
+                ticker.tick().await; // consume the immediate tick
+                loop {
+                    ticker.tick().await;
+                    registry::run_auto_mirrors(state_clone.clone(), path_clone.clone()).await;
+                }
+            }
+        });
+    }
 
     let listener = tokio::net::TcpListener::bind("0.0.0.0:8080")
         .await

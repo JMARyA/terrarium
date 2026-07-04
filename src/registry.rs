@@ -399,7 +399,7 @@ pub async fn serve_binary(
 
 // ── Upstream mirror ─────────────────────────────────────────────────────────
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize, Clone)]
 pub struct MirrorRequest {
     pub namespace: String,
     #[serde(rename = "type")]
@@ -410,24 +410,21 @@ pub struct MirrorRequest {
     pub platforms: Option<Vec<Platform>>,
 }
 
-/// `POST /registry/mirror`
-///
-/// Fetches providers from `registry.terraform.io` and stores them locally.
-pub async fn mirror_upstream(
-    _auth: AuthUser,
-    State(app): State<AppState>,
-    Json(req): Json<MirrorRequest>,
-) -> Result<Json<Value>, (StatusCode, String)> {
+/// Core mirror logic — shared by the HTTP handler and the auto-mirror startup task.
+pub async fn perform_mirror(app: &AppState, req: MirrorRequest) -> (Vec<String>, Vec<String>) {
     let client = reqwest::Client::new();
     let ns = &req.namespace;
     let tp = &req.type_;
 
-    let upstream: Value = client
+    let upstream: Value = match client
         .get(format!("https://registry.terraform.io/v1/providers/{ns}/{tp}/versions"))
         .header("User-Agent", "terrarium-mirror/1.0")
-        .send().await.map_err(|e| (StatusCode::BAD_GATEWAY, e.to_string()))?
-        .error_for_status().map_err(|e| (StatusCode::BAD_GATEWAY, e.to_string()))?
-        .json().await.map_err(|e| (StatusCode::BAD_GATEWAY, e.to_string()))?;
+        .send().await
+        .and_then(|r| r.error_for_status())
+    {
+        Ok(r) => match r.json().await { Ok(v) => v, Err(e) => return (vec![], vec![e.to_string()]) },
+        Err(e) => return (vec![], vec![e.to_string()]),
+    };
 
     let all_versions: Vec<String> = upstream["versions"].as_array().unwrap_or(&vec![])
         .iter().filter_map(|v| v["version"].as_str().map(String::from)).collect();
@@ -437,7 +434,7 @@ pub async fn mirror_upstream(
         None    => all_versions,
     };
 
-    let platforms = req.platforms.unwrap_or_else(|| vec![
+    let platforms = req.platforms.clone().unwrap_or_else(|| vec![
         Platform { os: "linux".into(),   arch: "amd64".into() },
         Platform { os: "linux".into(),   arch: "arm64".into() },
         Platform { os: "darwin".into(),  arch: "amd64".into() },
@@ -486,7 +483,7 @@ pub async fn mirror_upstream(
         }
     }
 
-    // Fetch docs from GitHub for each mirrored version.
+    // Fetch docs from GitHub for each successfully mirrored version.
     if let Some(source_url) = fetch_provider_source(&client, ns, tp).await {
         if let Some((owner, repo)) = parse_github_url(&source_url) {
             for ver in &want_versions {
@@ -496,7 +493,36 @@ pub async fn mirror_upstream(
     }
 
     tracing::info!("🪞 Mirror {ns}/{tp}: {} ok, {} errors", mirrored.len(), errors.len());
+    (mirrored, errors)
+}
+
+/// `POST /registry/mirror`
+///
+/// Fetches providers from `registry.terraform.io` and stores them locally.
+pub async fn mirror_upstream(
+    _auth: AuthUser,
+    State(app): State<AppState>,
+    Json(req): Json<MirrorRequest>,
+) -> Result<Json<Value>, (StatusCode, String)> {
+    let (mirrored, errors) = perform_mirror(&app, req).await;
     Ok(Json(json!({ "mirrored": mirrored, "errors": errors })))
+}
+
+/// Run all mirrors listed in `mirrors.json` inside the data directory.
+/// Called on startup and optionally repeated on a configurable interval.
+pub async fn run_auto_mirrors(app: AppState, mirrors_path: std::path::PathBuf) {
+    let content = match std::fs::read_to_string(&mirrors_path) {
+        Ok(s) => s,
+        Err(e) => { tracing::warn!("Cannot read mirrors.json: {e}"); return; }
+    };
+    let mirrors: Vec<MirrorRequest> = match serde_json::from_str(&content) {
+        Ok(v) => v,
+        Err(e) => { tracing::warn!("Invalid mirrors.json: {e}"); return; }
+    };
+    tracing::info!("🔄 Auto-mirroring {} provider(s)", mirrors.len());
+    for req in mirrors {
+        perform_mirror(&app, req).await;
+    }
 }
 
 async fn fetch_provider_source(client: &reqwest::Client, ns: &str, tp: &str) -> Option<String> {

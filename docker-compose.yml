@@ -5,7 +5,13 @@ services:
       - "8080:8080"
     volumes:
       - ./data:/app
+      # Optional: declarative mirror list (see mirrors.json.example).
+      # Place mirrors.json next to this file and uncomment:
+      # - ./mirrors.json:/app/mirrors.json:ro
     environment:
       - "RUST_LOG=info"
       - "TERRARIUM_DATA=/app"
+      # Refresh mirrored providers every N seconds (omit = only on startup).
+      # 86400 = daily, 3600 = hourly
+      # - "TERRARIUM_MIRROR_INTERVAL=86400"
     command: "/bin/terra serve"

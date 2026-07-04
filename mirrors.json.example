@@ -1,0 +1,21 @@
+[
+  {
+    "namespace": "hashicorp",
+    "type": "aws",
+    "versions": ["5.60.0"],
+    "platforms": [
+      {"os": "linux",  "arch": "amd64"},
+      {"os": "linux",  "arch": "arm64"},
+      {"os": "darwin", "arch": "arm64"}
+    ]
+  },
+  {
+    "namespace": "hashicorp",
+    "type": "kubernetes",
+    "versions": ["2.31.0"]
+  },
+  {
+    "namespace": "hashicorp",
+    "type": "random"
+  }
+]
