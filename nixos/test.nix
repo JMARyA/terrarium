@@ -13,10 +13,9 @@ pkgs.testers.runNixOSTest {
         package = terrarium;
       };
 
-      environment.systemPackages = [ pkgs.curl pkgs.opentofu ];
+      environment.systemPackages = [ pkgs.curl pkgs.opentofu pkgs.zip ];
 
-      # Minimal OpenTofu root module for the compatibility test.
-      # No providers or resources so tofu never tries to reach the internet.
+      # Terraform config for the state-backend compatibility test.
       environment.etc."terrarium-tofu-test/main.tf".text = ''
         terraform {
           backend "http" {
@@ -30,6 +29,33 @@ pkgs.testers.runNixOSTest {
 
         output "hello" {
           value = "world"
+        }
+      '';
+
+      # CLI config that installs from a local filesystem mirror.
+      # OpenTofu requires HTTPS for network mirrors, so we download the provider
+      # from terrarium via curl and hand it to tofu as a filesystem mirror instead.
+      environment.etc."terrarium-registry-test/tofurc".text = ''
+        provider_installation {
+          filesystem_mirror {
+            path    = "/tmp/fsmirror"
+            include = ["example.com/test/myprovider"]
+          }
+          direct {
+            exclude = ["example.com/test/myprovider"]
+          }
+        }
+      '';
+
+      # Provider config that sources from the fake example.com registry.
+      environment.etc."terrarium-registry-test/main.tf".text = ''
+        terraform {
+          required_providers {
+            myprovider = {
+              source  = "example.com/test/myprovider"
+              version = "1.0.0"
+            }
+          }
         }
       '';
 
@@ -199,5 +225,110 @@ pkgs.testers.runNixOSTest {
     server.succeed("cd /tmp/tf && tofu apply -auto-approve -input=false -no-color")
     out = server.succeed("curl -sf -u admin:secret http://localhost:8080/lock")
     assert "tofu-compat" not in out, f"Lock not released after second tofu apply: {out}"
+
+    # ── Provider registry ───────────────────────────────────────────────────
+
+    # Build a minimal fake provider zip.  tofu init downloads and hash-checks
+    # the archive but does not execute the binary, so a shell script is fine.
+    server.succeed("mkdir -p /tmp/prov")
+    server.succeed(
+        "printf '#!/bin/sh\necho fake-provider' "
+        "> /tmp/prov/terraform-provider-myprovider_v1.0.0_x5"
+    )
+    server.succeed("chmod +x /tmp/prov/terraform-provider-myprovider_v1.0.0_x5")
+    server.succeed(
+        "cd /tmp/prov && zip "
+        "terraform-provider-myprovider_1.0.0_linux_amd64.zip "
+        "terraform-provider-myprovider_v1.0.0_x5"
+    )
+
+    # Upload the provider to the terrarium registry
+    server.succeed(
+        "curl -sf -u admin:secret -X POST "
+        "http://localhost:8080/registry/providers/test/myprovider/1.0.0/linux/amd64 "
+        "--data-binary @/tmp/prov/terraform-provider-myprovider_1.0.0_linux_amd64.zip"
+    )
+
+    # Upload docs for the provider
+    server.succeed(
+        "curl -sf -u admin:secret -X PUT "
+        "http://localhost:8080/registry/providers/test/myprovider/1.0.0/docs "
+        "-d '# My Provider\n\nA test provider for terrarium.'"
+    )
+
+    # Service discovery endpoint
+    out = server.succeed("curl -sf http://localhost:8080/.well-known/terraform.json")
+    assert "providers.v1" in out, f"service discovery missing providers.v1: {out}"
+
+    # Provider registry v1 — list versions
+    out = server.succeed(
+        "curl -sf http://localhost:8080/registry/v1/providers/test/myprovider/versions"
+    )
+    assert "1.0.0" in out, f"version 1.0.0 missing from registry: {out}"
+    assert "linux" in out, f"platform missing from registry: {out}"
+
+    # Provider registry v1 — download info
+    out = server.succeed(
+        "curl -sf http://localhost:8080/registry/v1/providers/test/myprovider/1.0.0/download/linux/amd64"
+    )
+    assert "download_url" in out, f"download_url missing: {out}"
+    assert "shasum" in out, f"shasum missing: {out}"
+
+    # Download the binary back and verify it matches the upload
+    server.succeed(
+        "curl -sf -u admin:secret "
+        "http://localhost:8080/registry/providers/test/myprovider/1.0.0/linux/amd64/zip "
+        "> /tmp/prov/downloaded.zip"
+    )
+    orig = server.succeed("sha256sum /tmp/prov/terraform-provider-myprovider_1.0.0_linux_amd64.zip").split()[0]
+    got  = server.succeed("sha256sum /tmp/prov/downloaded.zip").split()[0]
+    assert orig == got, f"Downloaded zip hash mismatch: {orig} vs {got}"
+
+    # Network mirror protocol — index
+    out = server.succeed(
+        "curl -sf "
+        "http://localhost:8080/registry/mirror/example.com/test/myprovider/index.json"
+    )
+    assert "1.0.0" in out, f"version missing from mirror index: {out}"
+
+    # Network mirror protocol — version archives
+    out = server.succeed(
+        "curl -sf "
+        "http://localhost:8080/registry/mirror/example.com/test/myprovider/1.0.0.json"
+    )
+    assert "archives" in out, f"archives missing from mirror version: {out}"
+    assert "zh:" in out, f"zh: hash missing from mirror: {out}"
+    assert "linux_amd64" in out, f"platform missing from mirror: {out}"
+
+    # OpenTofu end-to-end: download the provider from terrarium and hand it to
+    # tofu via a filesystem mirror (OpenTofu requires HTTPS for network mirrors,
+    # so we exercise the download endpoint directly and let tofu verify the zip).
+    server.succeed(
+        "mkdir -p '/tmp/fsmirror/example.com/test/myprovider' /tmp/reg-tofu"
+    )
+    server.succeed(
+        "curl -sf -u admin:secret "
+        "http://localhost:8080/registry/providers/test/myprovider/1.0.0/linux/amd64/zip "
+        "-o '/tmp/fsmirror/example.com/test/myprovider/terraform-provider-myprovider_1.0.0_linux_amd64.zip'"
+    )
+    server.succeed("cp /etc/terrarium-registry-test/main.tf /tmp/reg-tofu/")
+    server.succeed(
+        "cd /tmp/reg-tofu && TF_CLI_CONFIG_FILE=/etc/terrarium-registry-test/tofurc "
+        "tofu init -input=false -no-color"
+    )
+
+    # Provider must be extracted into the tofu plugin cache after init
+    server.succeed(
+        "find /tmp/reg-tofu/.terraform -name 'terraform-provider-myprovider*' | grep -q ."
+    )
+
+    # Web UI — registry index page renders provider list
+    out = server.succeed("curl -sf http://localhost:8080/registry")
+    assert "myprovider" in out, f"myprovider missing from registry UI: {out}"
+
+    # Web UI — provider detail page renders version and docs
+    out = server.succeed("curl -sf http://localhost:8080/registry/test/myprovider")
+    assert "1.0.0" in out, f"version missing from provider detail page: {out}"
+    assert "My Provider" in out, f"docs missing from provider detail page: {out}"
   '';
 }

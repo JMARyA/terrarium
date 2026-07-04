@@ -129,7 +129,7 @@ form.inline { display:flex; gap:10px; align-items:center; flex-wrap:wrap; }
 fn page(title: &str, user: Option<&str>, body: &str) -> Html<String> {
     let nav = match user {
         Some(u) => format!(
-            r#"<nav><a href="/">Workspaces</a><a href="/tokens">Tokens</a></nav>
+            r#"<nav><a href="/">Workspaces</a><a href="/registry">Registry</a><a href="/tokens">Tokens</a></nav>
                <span class="spacer"></span>
                <span class="dim">{}</span>
                <form method="post" action="/logout"><button type="submit">logout</button></form>"#,
@@ -986,4 +986,126 @@ pub async fn graph_view(
     }
 
     page("State", Some(&user.username), &body).into_response()
+}
+
+// ── Registry UI ─────────────────────────────────────────────────────────────
+
+/// `GET /registry` — list all providers stored in this terrarium instance.
+pub async fn registry_page(
+    State(app): State<AppState>,
+    maybe: MaybeUser,
+) -> Response {
+    let user = maybe.user().map(|u| u.username.clone());
+    let providers = app.registry.list_providers();
+
+    let mut rows = String::new();
+    for (ns, tp) in &providers {
+        let versions = app.registry.list_versions(ns, tp);
+        let latest = versions.last().map(|s| s.as_str()).unwrap_or("-");
+        let all_platforms: Vec<_> = versions.iter().flat_map(|v| app.registry.list_platforms(ns, tp, v)).collect();
+        let mut seen = std::collections::BTreeSet::new();
+        let plats: Vec<String> = all_platforms.into_iter()
+            .filter_map(|p| {
+                let k = format!("{}_{}", p.os, p.arch);
+                seen.insert(k.clone()).then_some(k)
+            })
+            .collect();
+        rows.push_str(&format!(
+            r#"<tr>
+                 <td><a href="/registry/{ns}/{tp}">{ns}/<strong>{tp}</strong></a></td>
+                 <td class="cyan">{latest}</td>
+                 <td class="dim">{}</td>
+                 <td class="dim">{}</td>
+               </tr>"#,
+            versions.len(),
+            esc(&plats.join(", ")),
+        ));
+    }
+
+    let table = if providers.is_empty() {
+        r#"<div class="panel dim">No providers published yet.</div>"#.to_string()
+    } else {
+        format!(
+            r#"<div class="panel" style="padding:0">
+               <table>
+                 <thead><tr><th>Provider</th><th>Latest</th><th>Versions</th><th>Platforms</th></tr></thead>
+                 <tbody>{rows}</tbody>
+               </table></div>"#
+        )
+    };
+
+    let body = format!(
+        r#"<h1>Provider Registry</h1>
+           <p class="dim">Push: <code>POST /registry/providers/{{namespace}}/{{type}}/{{version}}/{{os}}/{{arch}}</code>
+           &nbsp;·&nbsp; Mirror: <code>POST /registry/mirror</code></p>
+           {table}"#
+    );
+    page("Registry", user.as_deref(), &body).into_response()
+}
+
+/// `GET /registry/{namespace}/{type}` — detail page for one provider.
+pub async fn provider_page(
+    State(app): State<AppState>,
+    Path((ns, tp)): Path<(String, String)>,
+    maybe: MaybeUser,
+) -> Response {
+    let user = maybe.user().map(|u| u.username.clone());
+    let versions = app.registry.list_versions(&ns, &tp);
+    if versions.is_empty() {
+        return (StatusCode::NOT_FOUND, page("Not found", user.as_deref(),
+            &format!(r#"<h1>{}/{}</h1><div class="panel dim">No such provider.</div>"#, esc(&ns), esc(&tp))
+        )).into_response();
+    }
+
+    // Docs from latest version that has them
+    let docs_html = versions.iter().rev()
+        .find_map(|v| app.registry.get_meta(&ns, &tp, v).and_then(|m| m.docs))
+        .map(|md| format!(
+            r#"<h2>Documentation</h2><div class="panel"><pre style="white-space:pre-wrap;word-break:break-word">{}</pre></div>"#,
+            esc(&md)
+        ))
+        .unwrap_or_default();
+
+    // Version table
+    let mut rows = String::new();
+    for ver in versions.iter().rev() {
+        let platforms = app.registry.list_platforms(&ns, &tp, ver);
+        let plats: Vec<String> = platforms.iter().map(|p| format!("{}_{}", p.os, p.arch)).collect();
+        let meta = app.registry.get_meta(&ns, &tp, ver).unwrap_or_default();
+        rows.push_str(&format!(
+            r#"<tr>
+                 <td class="cyan">{ver}</td>
+                 <td class="dim">{}</td>
+                 <td class="dim">{}</td>
+               </tr>"#,
+            esc(&plats.join(", ")),
+            esc(&meta.protocols.join(", ")),
+        ));
+    }
+
+    let body = format!(
+        r#"<h1><span class="dim">{ns}/</span>{tp}</h1>
+           <h2>Versions</h2>
+           <div class="panel" style="padding:0">
+             <table>
+               <thead><tr><th>Version</th><th>Platforms</th><th>Protocols</th></tr></thead>
+               <tbody>{rows}</tbody>
+             </table>
+           </div>
+           <h2>Usage</h2>
+           <div class="panel">
+             <pre>terraform {{
+  required_providers {{
+    {tp} = {{
+      source  = "&lt;registry-host&gt;/{ns}/{tp}"
+      version = "{latest}"
+    }}
+  }}
+}}</pre>
+           </div>
+           <p class="dim">Network mirror: configure <code>url = "http://&lt;host&gt;/registry/mirror/"</code> in your CLI config.</p>
+           {docs_html}"#,
+        latest = versions.last().map(|s: &String| s.as_str()).unwrap_or(""),
+    );
+    page(&format!("{ns}/{tp}"), user.as_deref(), &body).into_response()
 }

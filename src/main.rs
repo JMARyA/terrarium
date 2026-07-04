@@ -15,6 +15,7 @@ mod cli;
 mod client;
 mod config;
 pub mod lock;
+pub mod registry;
 pub mod state;
 pub mod tfstate;
 pub mod user;
@@ -34,6 +35,7 @@ pub struct AppState {
     webhooks: webhook::WebhookStore,
     #[allow(dead_code)]
     tofu: Option<TofuBinary>,
+    pub registry: registry::RegistryStore,
 }
 
 impl axum::extract::FromRef<AppState> for authur::UserDB<authur::vfs::PhysicalFS> {
@@ -601,9 +603,11 @@ async fn serve(tofu_binary: Option<TofuBinary>) {
         users: authur::UserDB::new(data.join("users").to_str().unwrap()).await,
         webhooks: WebhookStore::new(data.join("webhooks.json")),
         tofu: tofu_binary,
+        registry: registry::RegistryStore::new(data.join("registry")),
     };
 
     let app = Router::new()
+        // ── Terraform state / lock API ──
         .route("/state", get(state::list_states))
         .route(
             "/state/{*name}",
@@ -621,6 +625,16 @@ async fn serve(tofu_binary: Option<TofuBinary>) {
             get(webhook::list_webhooks).post(webhook::add_webhook),
         )
         .route("/webhooks/id/{id}", axum::routing::delete(webhook::remove_webhook))
+        // ── Provider registry ──
+        .route("/.well-known/terraform.json", get(registry::service_discovery))
+        .route("/registry/v1/providers/{namespace}/{type}/versions", get(registry::list_versions))
+        .route("/registry/v1/providers/{namespace}/{type}/{version}/download/{os}/{arch}", get(registry::download_info))
+        .route("/registry/providers/{namespace}/{type}/{version}/{os}/{arch}", post(registry::upload_provider))
+        .route("/registry/providers/{namespace}/{type}/{version}/{os}/{arch}/zip", get(registry::serve_binary))
+        .route("/registry/providers/{namespace}/{type}/{version}/docs", axum::routing::put(registry::upload_docs))
+        .route("/registry/mirror", post(registry::mirror_upstream))
+        .route("/registry/mirror/{*path}", get(registry::network_mirror))
+        // ── Web UI ──
         .route("/", get(ui::dashboard))
         .route("/login", get(ui::login_page).post(ui::login_submit))
         .route("/logout", post(ui::logout))
@@ -629,6 +643,8 @@ async fn serve(tofu_binary: Option<TofuBinary>) {
         .route("/graph/{*name}", get(ui::graph_view))
         .route("/tokens", get(ui::tokens_page).post(ui::token_create))
         .route("/tokens/{id}/revoke", post(ui::token_revoke))
+        .route("/registry", get(ui::registry_page))
+        .route("/registry/{namespace}/{type}", get(ui::provider_page))
         .with_state(state);
 
     let listener = tokio::net::TcpListener::bind("0.0.0.0:8080")
