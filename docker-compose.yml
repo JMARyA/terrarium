@@ -5,13 +5,16 @@ services:
       - "8080:8080"
     volumes:
       - ./data:/app
-      # Optional: declarative mirror list (see mirrors.json.example).
+      # Optional: pre-warm selected providers (not required for normal use;
+      # the network mirror fetches providers lazily on demand).
       # Place mirrors.json next to this file and uncomment:
       # - ./mirrors.json:/app/mirrors.json:ro
     environment:
       - "RUST_LOG=info"
       - "TERRARIUM_DATA=/app"
-      # Refresh mirrored providers every N seconds (omit = only on startup).
+      # Refresh optional pre-warmed providers every N seconds.
       # 86400 = daily, 3600 = hourly
       # - "TERRARIUM_MIRROR_INTERVAL=86400"
+      # Lazy mirror upstream allow-list. Defaults to both registries below.
+      # - "TERRARIUM_UPSTREAM_REGISTRIES=registry.terraform.io,registry.opentofu.org"
     command: "/bin/terra serve"

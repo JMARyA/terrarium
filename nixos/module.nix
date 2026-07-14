@@ -65,8 +65,8 @@ in
       type = lib.types.listOf mirrorEntry;
       default = [];
       description = ''
-        Providers to mirror automatically from registry.terraform.io on startup.
-        Binaries and documentation are fetched and stored in the local registry.
+        Optional provider pre-warm list, mirrored automatically from registry.terraform.io on startup.
+        This is not required for normal use: the network mirror fetches providers lazily on demand.
 
         Example:
         ```nix
@@ -83,10 +83,16 @@ in
       type = lib.types.nullOr lib.types.ints.positive;
       default = null;
       description = ''
-        How often (in seconds) to refresh mirrored providers.
-        `null` (the default) mirrors only once on startup.
+        How often (in seconds) to refresh the optional pre-warmed providers.
+        `null` (the default) pre-warms only once on startup.
         86400 = daily, 3600 = hourly.
       '';
+    };
+
+    upstreamRegistries = lib.mkOption {
+      type = lib.types.listOf lib.types.str;
+      default = [ "registry.terraform.io" "registry.opentofu.org" ];
+      description = "Upstream registries allowed for lazy provider mirroring.";
     };
   };
 
@@ -103,6 +109,7 @@ in
       after = [ "network.target" ];
       environment = {
         TERRARIUM_DATA = cfg.dataDir;
+        TERRARIUM_UPSTREAM_REGISTRIES = lib.concatStringsSep "," cfg.upstreamRegistries;
         RUST_LOG = "info";
       } // lib.optionalAttrs (cfg.mirrorInterval != null) {
         TERRARIUM_MIRROR_INTERVAL = toString cfg.mirrorInterval;

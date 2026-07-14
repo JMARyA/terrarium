@@ -1357,9 +1357,23 @@ curl -u alice:token \
 <p class="dim">The service discovery endpoint (<code>/.well-known/terraform.json</code>) tells OpenTofu where to find the provider API automatically when the hostname matches.</p>
 
 <h2>3 — Provider mirror</h2>
-<p class="dim">Mirror providers from registry.terraform.io into terrarium. Binaries and documentation are fetched automatically — docs are pulled from the provider's GitHub repository at the release tag.</p>
+<p class="dim">Use terrarium as an OpenTofu network mirror. Providers are fetched lazily from the upstream registry named in the provider source, then cached locally. By default, <code>registry.terraform.io</code> and <code>registry.opentofu.org</code> are allowed.</p>
 
-<p><strong>One-shot mirror via API:</strong></p>
+<p><strong>Configure OpenTofu to use terrarium as a network mirror</strong> (requires HTTPS):</p>
+<div class="panel"><pre data-url># ~/.tofurc  (or TF_CLI_CONFIG_FILE)
+provider_installation {
+  network_mirror {
+    url     = "https://terrarium.example/registry/mirror/"
+    include = ["registry.opentofu.org/*/*", "registry.terraform.io/*/*"]
+  }
+  direct {
+    exclude = ["registry.opentofu.org/*/*", "registry.terraform.io/*/*"]
+  }
+}</pre></div>
+
+<p class="dim">On the first <code>tofu init</code>, terrarium discovers available versions from the upstream registry and downloads the requested provider archives on demand.</p>
+
+<p><strong>Optional pre-warm via API:</strong></p>
 <div class="panel"><pre data-url>curl -u alice:token \
   -X POST "https://terrarium.example/registry/mirror" \
   -H "Content-Type: application/json" \
@@ -1373,9 +1387,9 @@ curl -u alice:token \
       {"os": "darwin", "arch": "arm64"}
     ]
   }'</pre></div>
-<p class="dim">Omit <code>versions</code> to mirror all versions. Omit <code>platforms</code> to use the default five (linux/darwin/windows × amd64/arm64).</p>
+<p class="dim">Pre-warming is optional. Omit <code>versions</code> to mirror all versions. Omit <code>platforms</code> to use the default five (linux/darwin/windows × amd64/arm64).</p>
 
-<p><strong>Automatic mirror on startup</strong> — place a <code>mirrors.json</code> file in the data directory (<code>TERRARIUM_DATA</code>):</p>
+<p><strong>Optional automatic pre-warm on startup</strong> — place a <code>mirrors.json</code> file in the data directory (<code>TERRARIUM_DATA</code>):</p>
 <div class="panel"><pre>[
   {
     "namespace": "hashicorp",
@@ -1388,19 +1402,7 @@ curl -u alice:token \
     "type": "random"
   }
 ]</pre></div>
-<p class="dim">Set <code>TERRARIUM_MIRROR_INTERVAL=86400</code> to re-mirror daily (value is in seconds). The NixOS module accepts this declaratively via <code>services.terrarium.mirrors</code> and <code>services.terrarium.mirrorInterval</code>.</p>
-
-<p><strong>Configure OpenTofu to use terrarium as a network mirror</strong> (requires HTTPS):</p>
-<div class="panel"><pre data-url># ~/.tofurc  (or TF_CLI_CONFIG_FILE)
-provider_installation {
-  network_mirror {
-    url     = "https://terrarium.example/registry/mirror/"
-    include = ["registry.terraform.io/hashicorp/*"]
-  }
-  direct {
-    exclude = ["registry.terraform.io/hashicorp/*"]
-  }
-}</pre></div>
+<p class="dim">Set <code>TERRARIUM_MIRROR_INTERVAL=86400</code> to refresh pre-warmed providers daily (value is in seconds). The NixOS module accepts this declaratively via <code>services.terrarium.mirrors</code> and <code>services.terrarium.mirrorInterval</code>.</p>
 
 <p><strong>Filesystem mirror</strong> (works over plain HTTP, good for local dev):</p>
 <div class="panel"><pre data-url># Download a provider zip from terrarium
@@ -1450,7 +1452,8 @@ The web UI uses a session cookie set at login.</p>
 <h2>6 — Environment variables</h2>
 <div class="panel"><pre>TERRARIUM_DATA             # server: data directory (default: current dir)
 TERRARIUM_TLS              # server: set to 1 to mark session cookies Secure (use behind TLS)
-TERRARIUM_MIRROR_INTERVAL  # server: re-mirror every N seconds (requires mirrors.json in data dir)
+TERRARIUM_MIRROR_INTERVAL  # server: refresh optional mirrors.json pre-warm every N seconds
+TERRARIUM_UPSTREAM_REGISTRIES # server: comma-separated upstream registries allowed for lazy mirror
 TERRARIUM_URL              # client: server URL
 TERRARIUM_USER             # client: username
 TERRARIUM_PASSWORD         # client: password

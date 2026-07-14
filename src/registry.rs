@@ -14,8 +14,8 @@
 //!     present in the CLI config.  No GPG signatures required; providers are
 //!     verified by `zh:` (zip-SHA256) hashes.
 //!
-//!  4. **Upstream mirroring** — one POST triggers a fetch-and-cache of a
-//!     provider (or set of versions/platforms) from registry.terraform.io.
+//!  4. **Upstream mirroring** — providers are fetched-and-cached either by a
+//!     manual POST or lazily when the network mirror is queried.
 
 use std::io::Read as _;
 use std::path::PathBuf;
@@ -297,6 +297,129 @@ fn entry_name(e: &std::fs::DirEntry) -> String {
 fn semver_cmp(a: &str, b: &str) -> std::cmp::Ordering {
     let p = |s: &str| -> Vec<u64> { s.split('.').filter_map(|x| x.parse().ok()).collect() };
     p(a).cmp(&p(b))
+}
+
+fn upstream_registry_allowed(host: &str) -> bool {
+    if host.is_empty() || host.contains('/') || host.contains(':') || host.contains('@') {
+        return false;
+    }
+
+    let allowed = std::env::var("TERRARIUM_UPSTREAM_REGISTRIES")
+        .unwrap_or_else(|_| "registry.terraform.io,registry.opentofu.org".into());
+
+    allowed
+        .split(',')
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .any(|allowed_host| allowed_host == host)
+}
+
+fn upstream_api_url(host: &str, path: &str) -> Option<String> {
+    upstream_registry_allowed(host).then(|| format!("https://{host}{path}"))
+}
+
+async fn fetch_upstream_versions(client: &reqwest::Client, host: &str, ns: &str, tp: &str) -> Result<Value, String> {
+    let url = upstream_api_url(host, &format!("/v1/providers/{ns}/{tp}/versions"))
+        .ok_or_else(|| format!("upstream registry not allowed: {host}"))?;
+    let resp = client
+        .get(url)
+        .header("User-Agent", "terrarium-mirror/1.0")
+        .send().await
+        .map_err(|e| e.to_string())?
+        .error_for_status()
+        .map_err(|e| e.to_string())?;
+    resp.json().await.map_err(|e| e.to_string())
+}
+
+fn versions_from_upstream_json(upstream: &Value) -> Vec<String> {
+    let mut versions: Vec<String> = upstream["versions"].as_array().unwrap_or(&vec![])
+        .iter()
+        .filter_map(|v| v["version"].as_str().map(String::from))
+        .collect();
+    versions.sort_by(|a, b| semver_cmp(a, b));
+    versions
+}
+
+fn platforms_for_version(upstream: &Value, ver: &str) -> Vec<Platform> {
+    upstream["versions"].as_array().unwrap_or(&vec![])
+        .iter()
+        .find(|v| v["version"].as_str() == Some(ver))
+        .and_then(|v| v["platforms"].as_array())
+        .into_iter()
+        .flatten()
+        .filter_map(|p| Some(Platform {
+            os: p["os"].as_str()?.into(),
+            arch: p["arch"].as_str()?.into(),
+        }))
+        .collect()
+}
+
+async fn mirror_upstream_platform(
+    app: &AppState,
+    client: &reqwest::Client,
+    host: &str,
+    ns: &str,
+    tp: &str,
+    ver: &str,
+    p: &Platform,
+) -> Result<bool, String> {
+    if app.registry.get_sha256(ns, tp, ver, &p.os, &p.arch).is_some() {
+        return Ok(false);
+    }
+
+    let info_url = upstream_api_url(host, &format!(
+        "/v1/providers/{ns}/{tp}/{ver}/download/{}/{}",
+        p.os, p.arch
+    )).ok_or_else(|| format!("upstream registry not allowed: {host}"))?;
+
+    let info: Value = client
+        .get(info_url)
+        .header("User-Agent", "terrarium-mirror/1.0")
+        .send().await
+        .map_err(|e| e.to_string())?
+        .error_for_status()
+        .map_err(|e| e.to_string())?
+        .json().await
+        .map_err(|e| e.to_string())?;
+
+    let durl = info["download_url"].as_str().ok_or_else(|| "missing download_url".to_string())?;
+    let zip = client
+        .get(durl)
+        .header("User-Agent", "terrarium-mirror/1.0")
+        .send().await
+        .map_err(|e| e.to_string())?
+        .error_for_status()
+        .map_err(|e| e.to_string())?
+        .bytes().await
+        .map_err(|e| e.to_string())?;
+
+    let signing_keys: SigningKeys = serde_json::from_value(info["signing_keys"].clone()).unwrap_or_default();
+    let protocols: Vec<String> = info["protocols"].as_array()
+        .unwrap_or(&vec![])
+        .iter()
+        .filter_map(|v| v.as_str().map(String::from))
+        .collect();
+
+    app.registry.store_binary(ns, tp, ver, &p.os, &p.arch, &zip, protocols, signing_keys, None);
+    tracing::info!("🪞 lazily mirrored {host}/{ns}/{tp} {ver} {}_{}", p.os, p.arch);
+    Ok(true)
+}
+
+async fn ensure_upstream_version_cached(app: &AppState, host: &str, ns: &str, tp: &str, ver: &str) {
+    let client = reqwest::Client::new();
+    let upstream = match fetch_upstream_versions(&client, host, ns, tp).await {
+        Ok(v) => v,
+        Err(e) => {
+            tracing::warn!("lazy mirror: cannot list {host}/{ns}/{tp}: {e}");
+            return;
+        }
+    };
+
+    for p in platforms_for_version(&upstream, ver) {
+        if let Err(e) = mirror_upstream_platform(app, &client, host, ns, tp, ver, &p).await {
+            tracing::debug!("lazy mirror: {host}/{ns}/{tp} {ver} {}_{}: {e}", p.os, p.arch);
+        }
+    }
 }
 
 // ── Service discovery ──────────────────────────────────────────────────────
@@ -728,11 +851,28 @@ pub async fn network_mirror(
     // splitn(4) gives exactly [host, namespace, type, filename].
     let parts: Vec<&str> = path.splitn(4, '/').collect();
     if parts.len() < 4 { return StatusCode::NOT_FOUND.into_response(); }
-    let (_host, ns, tp, rest) = (parts[0], parts[1], parts[2], parts[3]);
+    let (host, ns, tp, rest) = (parts[0], parts[1], parts[2], parts[3]);
 
     // ── index.json ──
     if rest == "index.json" {
-        let versions = app.registry.list_versions(ns, tp);
+        let mut versions = app.registry.list_versions(ns, tp);
+
+        // On-demand mode: merge the local cache with the upstream registry that
+        // appears in the mirror path (for example registry.opentofu.org).  This
+        // lets OpenTofu discover newly published versions without predeclaring
+        // them in mirrors.json.
+        if upstream_registry_allowed(host) {
+            let client = reqwest::Client::new();
+            match fetch_upstream_versions(&client, host, ns, tp).await {
+                Ok(upstream) => {
+                    versions.extend(versions_from_upstream_json(&upstream));
+                    versions.sort_by(|a, b| semver_cmp(a, b));
+                    versions.dedup();
+                }
+                Err(e) => tracing::debug!("lazy mirror index: cannot list {host}/{ns}/{tp}: {e}"),
+            }
+        }
+
         if versions.is_empty() { return StatusCode::NOT_FOUND.into_response(); }
         let map: serde_json::Map<String, Value> =
             versions.into_iter().map(|v| (v, json!({}))).collect();
@@ -741,6 +881,10 @@ pub async fn network_mirror(
 
     // ── {version}.json ──
     if let Some(ver) = rest.strip_suffix(".json") {
+        if upstream_registry_allowed(host) {
+            ensure_upstream_version_cached(&app, host, ns, tp, ver).await;
+        }
+
         let platforms = app.registry.list_platforms(ns, tp, ver);
         if platforms.is_empty() { return StatusCode::NOT_FOUND.into_response(); }
 
@@ -763,11 +907,31 @@ pub async fn network_mirror(
         // terraform-provider-{type}_{version}_{os}_{arch}.zip
         let prefix = format!("terraform-provider-{tp}_");
         if let Some(suffix) = rest.strip_prefix(&prefix).and_then(|s| s.strip_suffix(".zip")) {
-            for ver in app.registry.list_versions(ns, tp) {
+            let mut versions = app.registry.list_versions(ns, tp);
+            if upstream_registry_allowed(host) {
+                let client = reqwest::Client::new();
+                if let Ok(upstream) = fetch_upstream_versions(&client, host, ns, tp).await {
+                    versions.extend(versions_from_upstream_json(&upstream));
+                    versions.sort_by(|a, b| semver_cmp(a, b));
+                    versions.dedup();
+                }
+            }
+
+            for ver in versions {
                 if let Some(os_arch) = suffix.strip_prefix(&format!("{ver}_")) {
                     if let Some((os, arch)) = os_arch.split_once('_') {
                         if let Some(data) = app.registry.get_zip(ns, tp, &ver, os, arch) {
                             return ([(header::CONTENT_TYPE, "application/zip")], data).into_response();
+                        }
+
+                        if upstream_registry_allowed(host) {
+                            let client = reqwest::Client::new();
+                            let p = Platform { os: os.into(), arch: arch.into() };
+                            if mirror_upstream_platform(&app, &client, host, ns, tp, &ver, &p).await.is_ok() {
+                                if let Some(data) = app.registry.get_zip(ns, tp, &ver, os, arch) {
+                                    return ([(header::CONTENT_TYPE, "application/zip")], data).into_response();
+                                }
+                            }
                         }
                     }
                 }
