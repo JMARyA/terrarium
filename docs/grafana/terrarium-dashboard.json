@@ -1,0 +1,277 @@
+{
+  "title": "Terrarium Observability",
+  "uid": "terrarium-observability",
+  "tags": ["terrarium", "terraform", "opentofu", "prometheus"],
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 2,
+  "refresh": "30s",
+  "time": { "from": "now-24h", "to": "now" },
+  "templating": {
+    "list": [
+      {
+        "name": "DS_PROMETHEUS",
+        "label": "Prometheus",
+        "type": "datasource",
+        "query": "prometheus",
+        "refresh": 1,
+        "current": {},
+        "options": []
+      }
+    ]
+  },
+  "annotations": { "list": [] },
+  "panels": [
+    {
+      "id": 1,
+      "title": "Active states",
+      "type": "stat",
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "gridPos": { "h": 4, "w": 4, "x": 0, "y": 0 },
+      "targets": [{ "refId": "A", "expr": "sum(terrarium_states_total{archived=\"false\"})" }],
+      "fieldConfig": { "defaults": { "unit": "short" }, "overrides": [] },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }, "orientation": "auto", "textMode": "auto", "colorMode": "value", "graphMode": "area", "justifyMode": "auto" }
+    },
+    {
+      "id": 2,
+      "title": "Total resources",
+      "type": "stat",
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "gridPos": { "h": 4, "w": 4, "x": 4, "y": 0 },
+      "targets": [{ "refId": "A", "expr": "terrarium_tf_resources_total" }],
+      "fieldConfig": { "defaults": { "unit": "short" }, "overrides": [] },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }, "orientation": "auto", "textMode": "auto", "colorMode": "value", "graphMode": "area", "justifyMode": "auto" }
+    },
+    {
+      "id": 3,
+      "title": "Total storage",
+      "type": "stat",
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "gridPos": { "h": 4, "w": 4, "x": 8, "y": 0 },
+      "targets": [{ "refId": "A", "expr": "terrarium_storage_total_bytes" }],
+      "fieldConfig": { "defaults": { "unit": "bytes" }, "overrides": [] },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }, "orientation": "auto", "textMode": "auto", "colorMode": "value", "graphMode": "area", "justifyMode": "auto" }
+    },
+    {
+      "id": 4,
+      "title": "Active locks",
+      "type": "stat",
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "gridPos": { "h": 4, "w": 4, "x": 12, "y": 0 },
+      "targets": [{ "refId": "A", "expr": "terrarium_locks_active" }],
+      "fieldConfig": { "defaults": { "unit": "short" }, "overrides": [] },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }, "orientation": "auto", "textMode": "auto", "colorMode": "value", "graphMode": "area", "justifyMode": "auto" }
+    },
+    {
+      "id": 5,
+      "title": "HTTP 5xx ratio",
+      "type": "stat",
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "gridPos": { "h": 4, "w": 4, "x": 16, "y": 0 },
+      "targets": [{ "refId": "A", "expr": "sum(rate(terrarium_http_requests_total{status=~\"5..\"}[$__rate_interval])) / sum(rate(terrarium_http_requests_total[$__rate_interval]))" }],
+      "fieldConfig": { "defaults": { "unit": "percentunit", "min": 0 }, "overrides": [] },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }, "orientation": "auto", "textMode": "auto", "colorMode": "value", "graphMode": "area", "justifyMode": "auto" }
+    },
+    {
+      "id": 6,
+      "title": "Oldest lock age",
+      "type": "stat",
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "gridPos": { "h": 4, "w": 4, "x": 20, "y": 0 },
+      "targets": [{ "refId": "A", "expr": "terrarium_lock_max_age_seconds" }],
+      "fieldConfig": { "defaults": { "unit": "s" }, "overrides": [] },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }, "orientation": "auto", "textMode": "auto", "colorMode": "value", "graphMode": "area", "justifyMode": "auto" }
+    },
+    {
+      "id": 10,
+      "title": "States over time",
+      "type": "timeseries",
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "gridPos": { "h": 7, "w": 8, "x": 0, "y": 4 },
+      "targets": [
+        { "refId": "A", "expr": "sum by (archived) (terrarium_states_total)", "legendFormat": "archived={{archived}}" }
+      ],
+      "fieldConfig": { "defaults": { "unit": "short" }, "overrides": [] },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "single" } }
+    },
+    {
+      "id": 11,
+      "title": "State change velocity",
+      "type": "timeseries",
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "gridPos": { "h": 7, "w": 8, "x": 8, "y": 4 },
+      "targets": [
+        { "refId": "A", "expr": "sum by (result) (rate(terrarium_state_pushes_total[$__rate_interval]))", "legendFormat": "push {{result}}" },
+        { "refId": "B", "expr": "sum by (result) (rate(terrarium_state_pulls_total[$__rate_interval]))", "legendFormat": "pull {{result}}" },
+        { "refId": "C", "expr": "rate(terrarium_state_version_creations_total[$__rate_interval])", "legendFormat": "versions created" }
+      ],
+      "fieldConfig": { "defaults": { "unit": "ops" }, "overrides": [] },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "single" } }
+    },
+    {
+      "id": 12,
+      "title": "State byte deltas p95",
+      "type": "timeseries",
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "gridPos": { "h": 7, "w": 8, "x": 16, "y": 4 },
+      "targets": [
+        { "refId": "A", "expr": "histogram_quantile(0.95, sum(rate(terrarium_state_change_bytes_bucket[$__rate_interval])) by (le))", "legendFormat": "change p95" },
+        { "refId": "B", "expr": "histogram_quantile(0.95, sum(rate(terrarium_state_push_bytes_bucket[$__rate_interval])) by (le))", "legendFormat": "push size p95" }
+      ],
+      "fieldConfig": { "defaults": { "unit": "bytes" }, "overrides": [] },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "single" } }
+    },
+    {
+      "id": 20,
+      "title": "Terraform resource inventory",
+      "type": "timeseries",
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "gridPos": { "h": 7, "w": 8, "x": 0, "y": 11 },
+      "targets": [
+        { "refId": "A", "expr": "terrarium_tf_resources_total", "legendFormat": "resources" },
+        { "refId": "B", "expr": "terrarium_tf_resource_instances_total", "legendFormat": "instances" },
+        { "refId": "C", "expr": "terrarium_tf_outputs_total", "legendFormat": "outputs" },
+        { "refId": "D", "expr": "terrarium_tf_sensitive_outputs_total", "legendFormat": "sensitive outputs" }
+      ],
+      "fieldConfig": { "defaults": { "unit": "short" }, "overrides": [] },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "single" } }
+    },
+    {
+      "id": 21,
+      "title": "Managed vs data resources",
+      "type": "timeseries",
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "gridPos": { "h": 7, "w": 8, "x": 8, "y": 11 },
+      "targets": [
+        { "refId": "A", "expr": "sum by (mode) (terrarium_tf_resources_by_mode_total)", "legendFormat": "{{mode}}" }
+      ],
+      "fieldConfig": { "defaults": { "unit": "short" }, "overrides": [] },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "single" } }
+    },
+    {
+      "id": 22,
+      "title": "Resource and instance churn",
+      "type": "timeseries",
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "gridPos": { "h": 7, "w": 8, "x": 16, "y": 11 },
+      "targets": [
+        { "refId": "A", "expr": "sum by (direction) (rate(terrarium_tf_resource_delta_sum[$__rate_interval]))", "legendFormat": "resources {{direction}}" },
+        { "refId": "B", "expr": "sum by (direction) (rate(terrarium_tf_instance_delta_sum[$__rate_interval]))", "legendFormat": "instances {{direction}}" }
+      ],
+      "fieldConfig": { "defaults": { "unit": "short" }, "overrides": [] },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "single" } }
+    },
+    {
+      "id": 30,
+      "title": "Storage breakdown",
+      "type": "timeseries",
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "gridPos": { "h": 7, "w": 8, "x": 0, "y": 18 },
+      "targets": [
+        { "refId": "A", "expr": "terrarium_storage_current_state_bytes", "legendFormat": "current states" },
+        { "refId": "B", "expr": "terrarium_storage_state_versions_bytes", "legendFormat": "version history" },
+        { "refId": "C", "expr": "terrarium_storage_registry_bytes", "legendFormat": "registry" },
+        { "refId": "D", "expr": "terrarium_storage_locks_bytes", "legendFormat": "locks" }
+      ],
+      "fieldConfig": { "defaults": { "unit": "bytes" }, "overrides": [] },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "single" } }
+    },
+    {
+      "id": 31,
+      "title": "Storage growth / day",
+      "type": "timeseries",
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "gridPos": { "h": 7, "w": 8, "x": 8, "y": 18 },
+      "targets": [
+        { "refId": "A", "expr": "increase(terrarium_storage_total_bytes[24h])", "legendFormat": "total" },
+        { "refId": "B", "expr": "increase(terrarium_storage_state_versions_bytes[24h])", "legendFormat": "versions" }
+      ],
+      "fieldConfig": { "defaults": { "unit": "bytes" }, "overrides": [] },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "single" } }
+    },
+    {
+      "id": 32,
+      "title": "Version history",
+      "type": "timeseries",
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "gridPos": { "h": 7, "w": 8, "x": 16, "y": 18 },
+      "targets": [
+        { "refId": "A", "expr": "terrarium_state_versions_total", "legendFormat": "versions" },
+        { "refId": "B", "expr": "histogram_quantile(0.95, sum(rate(terrarium_state_versions_per_state_bucket[$__rate_interval])) by (le))", "legendFormat": "versions/state p95" }
+      ],
+      "fieldConfig": { "defaults": { "unit": "short" }, "overrides": [] },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "single" } }
+    },
+    {
+      "id": 40,
+      "title": "Lock operations",
+      "type": "timeseries",
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "gridPos": { "h": 7, "w": 8, "x": 0, "y": 25 },
+      "targets": [
+        { "refId": "A", "expr": "sum by (result) (rate(terrarium_lock_acquires_total[$__rate_interval]))", "legendFormat": "acquire {{result}}" },
+        { "refId": "B", "expr": "sum by (result) (rate(terrarium_lock_releases_total[$__rate_interval]))", "legendFormat": "release {{result}}" },
+        { "refId": "C", "expr": "rate(terrarium_lock_conflicts_total[$__rate_interval])", "legendFormat": "conflicts" }
+      ],
+      "fieldConfig": { "defaults": { "unit": "ops" }, "overrides": [] },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "single" } }
+    },
+    {
+      "id": 41,
+      "title": "Webhook failures and retries",
+      "type": "timeseries",
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "gridPos": { "h": 7, "w": 8, "x": 8, "y": 25 },
+      "targets": [
+        { "refId": "A", "expr": "sum by (event, result) (rate(terrarium_webhook_deliveries_total{result!=\"ok\"}[$__rate_interval]))", "legendFormat": "{{event}} {{result}}" },
+        { "refId": "B", "expr": "sum by (event) (rate(terrarium_webhook_retries_total[$__rate_interval]))", "legendFormat": "retry {{event}}" }
+      ],
+      "fieldConfig": { "defaults": { "unit": "ops" }, "overrides": [] },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "single" } }
+    },
+    {
+      "id": 42,
+      "title": "Registry and mirror",
+      "type": "timeseries",
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "gridPos": { "h": 7, "w": 8, "x": 16, "y": 25 },
+      "targets": [
+        { "refId": "A", "expr": "sum by (result) (rate(terrarium_registry_downloads_total[$__rate_interval]))", "legendFormat": "download {{result}}" },
+        { "refId": "B", "expr": "sum by (result) (rate(terrarium_registry_uploads_total[$__rate_interval]))", "legendFormat": "upload {{result}}" },
+        { "refId": "C", "expr": "sum by (result) (rate(terrarium_registry_mirror_runs_total[$__rate_interval]))", "legendFormat": "mirror {{result}}" }
+      ],
+      "fieldConfig": { "defaults": { "unit": "ops" }, "overrides": [] },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "single" } }
+    },
+    {
+      "id": 50,
+      "title": "HTTP request rate",
+      "type": "timeseries",
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "gridPos": { "h": 7, "w": 8, "x": 0, "y": 32 },
+      "targets": [{ "refId": "A", "expr": "sum by (route) (rate(terrarium_http_requests_total[$__rate_interval]))", "legendFormat": "{{route}}" }],
+      "fieldConfig": { "defaults": { "unit": "reqps" }, "overrides": [] },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "single" } }
+    },
+    {
+      "id": 51,
+      "title": "HTTP p95 latency",
+      "type": "timeseries",
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "gridPos": { "h": 7, "w": 8, "x": 8, "y": 32 },
+      "targets": [{ "refId": "A", "expr": "histogram_quantile(0.95, sum by (le, route) (rate(terrarium_http_request_duration_seconds_bucket[$__rate_interval])))", "legendFormat": "{{route}}" }],
+      "fieldConfig": { "defaults": { "unit": "s" }, "overrides": [] },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "single" } }
+    },
+    {
+      "id": 52,
+      "title": "Terrarium uptime",
+      "type": "timeseries",
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "gridPos": { "h": 7, "w": 8, "x": 16, "y": 32 },
+      "targets": [{ "refId": "A", "expr": "terrarium_uptime_seconds", "legendFormat": "uptime" }],
+      "fieldConfig": { "defaults": { "unit": "s" }, "overrides": [] },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "single" } }
+    }
+  ]
+}

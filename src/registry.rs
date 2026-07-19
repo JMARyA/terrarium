@@ -493,13 +493,17 @@ pub async fn upload_provider(
     Query(q): Query<UploadQuery>,
     body: Bytes,
 ) -> StatusCode {
-    if body.is_empty() { return StatusCode::BAD_REQUEST; }
+    if body.is_empty() {
+        metrics::counter!("terrarium_registry_uploads_total", "result" => "bad_request").increment(1);
+        return StatusCode::BAD_REQUEST;
+    }
 
     let protocols = q.protocols.as_deref()
         .map(|p| p.split(',').map(|s| s.trim().to_string()).collect())
         .unwrap_or_else(|| vec!["5.0".into(), "6.0".into()]);
 
     app.registry.store_binary(&ns, &tp, &ver, &os, &arch, &body, protocols, SigningKeys::default(), q.docs);
+    metrics::counter!("terrarium_registry_uploads_total", "result" => "ok").increment(1);
     tracing::info!("📦 Registry: uploaded {ns}/{tp} {ver} {os}_{arch}");
     StatusCode::OK
 }
@@ -542,7 +546,14 @@ pub async fn serve_binary(
     State(app): State<AppState>,
     Path((ns, tp, ver, os, arch)): Path<(String, String, String, String, String)>,
 ) -> Result<Response, StatusCode> {
-    let data = app.registry.get_zip(&ns, &tp, &ver, &os, &arch).ok_or(StatusCode::NOT_FOUND)?;
+    let data = match app.registry.get_zip(&ns, &tp, &ver, &os, &arch) {
+        Some(data) => data,
+        None => {
+            metrics::counter!("terrarium_registry_downloads_total", "result" => "not_found").increment(1);
+            return Err(StatusCode::NOT_FOUND);
+        }
+    };
+    metrics::counter!("terrarium_registry_downloads_total", "result" => "ok").increment(1);
     let fname = zip_filename(&tp, &ver, &os, &arch);
     Ok((
         [(header::CONTENT_TYPE, "application/zip"),
@@ -673,6 +684,7 @@ pub async fn mirror_upstream(
     Json(req): Json<MirrorRequest>,
 ) -> Result<Json<Value>, (StatusCode, String)> {
     let (mirrored, errors) = perform_mirror(&app, req).await;
+    metrics::counter!("terrarium_registry_mirror_runs_total", "result" => if errors.is_empty() { "ok" } else { "error" }).increment(1);
     Ok(Json(json!({ "mirrored": mirrored, "errors": errors })))
 }
 
@@ -749,6 +761,7 @@ pub async fn run_auto_mirrors(app: AppState, mirrors_path: std::path::PathBuf) -
     }
 
     tracing::info!("✅ mirror sync done: {total_ok} artifact(s), {total_err} error(s)");
+    metrics::counter!("terrarium_registry_mirror_runs_total", "result" => if total_err == 0 { "ok" } else { "error" }).increment(1);
     total_err
 }
 

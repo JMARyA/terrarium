@@ -3,6 +3,7 @@ use std::io::Write as _;
 use authur::Roles;
 use axum::{
     Router,
+    middleware,
     routing::{get, post, put},
 };
 use colored::Colorize as _;
@@ -26,6 +27,7 @@ mod plan_json;
 mod statediff;
 mod ui;
 mod auth;
+mod observability;
 
 #[derive(Clone)]
 pub struct AppState {
@@ -598,6 +600,10 @@ fn die(msg: String) -> ! {
 
 async fn serve(tofu_binary: Option<TofuBinary>) {
     let data = data_dir();
+    let metrics_enabled = observability::enabled();
+    if metrics_enabled {
+        observability::init();
+    }
     let state = AppState {
         state: StateContainer::new(data.join("state"), data.join("versions")),
         locks: LockContainer::new(data.join("locks")),
@@ -608,7 +614,7 @@ async fn serve(tofu_binary: Option<TofuBinary>) {
         mirror_status: std::sync::Arc::new(tokio::sync::RwLock::new(registry::MirrorStatus::default())),
     };
 
-    let app = Router::new()
+    let mut app = Router::new()
         // ── Terraform state / lock API ──
         .route("/state", get(state::list_states))
         .route(
@@ -651,7 +657,13 @@ async fn serve(tofu_binary: Option<TofuBinary>) {
         .route("/registry/{namespace}/{type}/{version}/docs", get(ui::provider_docs_index))
         .route("/registry/{namespace}/{type}/{version}/docs/{*path}", get(ui::provider_doc_page))
         .route("/help", get(ui::help_page))
-        .with_state(state.clone());
+        .with_state(state.clone())
+        .layer(middleware::from_fn(observability::http_middleware));
+
+    if metrics_enabled {
+        app = app.route("/metrics", get(observability::metrics));
+        observability::spawn_collector(state.clone(), data.clone());
+    }
 
     // Auto-mirror: spawn a background task if mirrors.json exists.
     let mirrors_path = data.join("mirrors.json");

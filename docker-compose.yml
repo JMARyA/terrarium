@@ -17,4 +17,7 @@ services:
       # - "TERRARIUM_MIRROR_INTERVAL=86400"
       # Lazy mirror upstream allow-list. Defaults to both registries below.
       # - "TERRARIUM_UPSTREAM_REGISTRIES=registry.terraform.io,registry.opentofu.org"
+      # Optional Prometheus metrics endpoint. Requires a dedicated bearer token.
+      # - "TERRARIUM_METRICS=1"
+      # - "TERRARIUM_METRICS_TOKEN_FILE=/run/secrets/terrarium_metrics_token"
     command: "/bin/terra serve"

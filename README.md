@@ -74,6 +74,26 @@ All data is stored under `TERRARIUM_DATA` (`/app` in the container, `./data` on 
 | `users/`        | User database        |
 | `webhooks.json` | Registered webhooks  |
 
+### Observability
+
+Terrarium can expose a Prometheus endpoint for safe aggregate platform metrics:
+
+```shell
+TERRARIUM_METRICS=1
+TERRARIUM_METRICS_TOKEN_FILE=/run/secrets/terrarium_metrics_token
+```
+
+Scrape:
+
+```text
+GET /metrics
+Authorization: Bearer <metrics-token>
+```
+
+Metrics focus on core Terrarium functions: state inventory and change velocity, Terraform resource/output aggregates, storage growth, locks, webhooks, provider registry/mirror jobs, and Terrarium API latency/errors. Metrics intentionally avoid workspace names, usernames, resource addresses, output names/values, token IDs, and webhook URLs.
+
+See `docs/observability.md` and `docs/grafana/terrarium-dashboard.json`.
+
 ---
 
 ## Web UI

@@ -199,9 +199,11 @@ pub async fn unarchive_state(
     validate_name(&name)?;
     tracing::info!("📬 Unarchiving state {name}");
     if app.state.unarchive(&name) {
+        metrics::counter!("terrarium_state_archives_total", "action" => "unarchive", "result" => "ok").increment(1);
         app.webhooks.fire("state.unarchive", &name, None, &user.username).await;
         Ok(StatusCode::OK)
     } else {
+        metrics::counter!("terrarium_state_archives_total", "action" => "unarchive", "result" => "not_found").increment(1);
         Err(StatusCode::NOT_FOUND)
     }
 }
@@ -215,9 +217,11 @@ pub async fn archive_state(
     validate_name(&name)?;
     tracing::info!("📦 Archiving state {name}");
     if app.state.archive(&name) {
+        metrics::counter!("terrarium_state_archives_total", "action" => "archive", "result" => "ok").increment(1);
         app.webhooks.fire("state.archive", &name, None, &user.username).await;
         Ok(StatusCode::OK)
     } else {
+        metrics::counter!("terrarium_state_archives_total", "action" => "archive", "result" => "not_found").increment(1);
         Err(StatusCode::NOT_FOUND)
     }
 }
@@ -235,7 +239,17 @@ pub async fn get_state(
         Some(v) => app.state.get_version(&name, v),
         None => app.state.get(&name),
     };
-    data.map(Bytes::from).ok_or(StatusCode::NOT_FOUND)
+    match data {
+        Some(data) => {
+            metrics::counter!("terrarium_state_pulls_total", "result" => "ok").increment(1);
+            metrics::histogram!("terrarium_state_pull_bytes").record(data.len() as f64);
+            Ok(Bytes::from(data))
+        }
+        None => {
+            metrics::counter!("terrarium_state_pulls_total", "result" => "not_found").increment(1);
+            Err(StatusCode::NOT_FOUND)
+        }
+    }
 }
 
 /// Update terraform state via POST
@@ -251,16 +265,37 @@ pub async fn put_state(
 
     if app.state.is_archived(&name) {
         tracing::info!("📦 State {name} is archived, rejecting write");
+        metrics::counter!("terrarium_state_pushes_total", "result" => "forbidden").increment(1);
         return Err(StatusCode::FORBIDDEN);
     }
 
     if let Some(lock_id) = lock.ID {
         if !app.locks.verify_lock(&name, &lock_id) {
+            metrics::counter!("terrarium_state_pushes_total", "result" => "locked").increment(1);
             return Err(StatusCode::LOCKED);
         }
     }
 
+    let existed = app.state.get(&name).is_some();
+    let previous = app.state.get(&name);
+    let before_counts = previous.as_deref().and_then(crate::observability::state_counts);
+    let before_len = previous.as_ref().map(|b| b.len()).unwrap_or(0);
+    let body_len = body.len();
+    let after_counts = crate::observability::state_counts(&body);
+
     app.state.insert(&name, body.to_vec());
+    metrics::counter!("terrarium_state_pushes_total", "result" => "ok").increment(1);
+    metrics::counter!("terrarium_state_version_creations_total").increment(1);
+    metrics::histogram!("terrarium_state_push_bytes").record(body_len as f64);
+    metrics::histogram!("terrarium_state_change_bytes").record(body_len.abs_diff(before_len) as f64);
+    if !existed {
+        metrics::counter!("terrarium_state_creations_total").increment(1);
+    }
+    if let (Some((br, bi, bo)), Some((ar, ai, ao))) = (before_counts, after_counts) {
+        crate::observability::observe_delta("terrarium_tf_resource_delta", br, ar);
+        crate::observability::observe_delta("terrarium_tf_instance_delta", bi, ai);
+        crate::observability::observe_delta("terrarium_tf_output_delta", bo, ao);
+    }
     let version = app.state.list_versions(&name).last().copied();
     app.webhooks.fire("state.push", &name, version, &user.username).await;
     Ok(StatusCode::OK)
@@ -278,11 +313,13 @@ pub async fn delete_state(
 
     if let Some(lock_id) = lock.ID {
         if !app.locks.verify_lock(&name, &lock_id) {
+            metrics::counter!("terrarium_state_deletions_total", "result" => "locked").increment(1);
             return Err(StatusCode::LOCKED);
         }
     }
 
     app.state.remove(&name);
+    metrics::counter!("terrarium_state_deletions_total", "result" => "ok").increment(1);
     app.webhooks.fire("state.delete", &name, None, &user.username).await;
     Ok(StatusCode::OK)
 }

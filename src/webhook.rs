@@ -1,10 +1,10 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use crate::auth::AuthUser;
 use axum::Json;
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
-use crate::auth::AuthUser;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use tokio::sync::RwLock;
@@ -126,15 +126,31 @@ impl WebhookStore {
 async fn deliver(client: &Client, url: &str, payload: &WebhookPayload) {
     for attempt in 0u32..4 {
         if attempt > 0 {
+            metrics::counter!("terrarium_webhook_retries_total", "event" => payload.event.clone())
+                .increment(1);
             let delay = std::time::Duration::from_secs(1 << (attempt - 1));
             tokio::time::sleep(delay).await;
         }
+        let started = std::time::Instant::now();
         match client.post(url).json(payload).send().await {
-            Ok(resp) if resp.status().is_success() => return,
-            Ok(resp) => {
-                tracing::warn!("Webhook {url} returned {} (attempt {attempt})", resp.status())
+            Ok(resp) if resp.status().is_success() => {
+                metrics::counter!("terrarium_webhook_deliveries_total", "event" => payload.event.clone(), "result" => "ok").increment(1);
+                metrics::histogram!("terrarium_webhook_delivery_duration_seconds", "event" => payload.event.clone(), "result" => "ok").record(started.elapsed().as_secs_f64());
+                return;
             }
-            Err(e) => tracing::warn!("Webhook {url} error: {e} (attempt {attempt})"),
+            Ok(resp) => {
+                metrics::counter!("terrarium_webhook_deliveries_total", "event" => payload.event.clone(), "result" => "http_error").increment(1);
+                metrics::histogram!("terrarium_webhook_delivery_duration_seconds", "event" => payload.event.clone(), "result" => "http_error").record(started.elapsed().as_secs_f64());
+                tracing::warn!(
+                    "Webhook {url} returned {} (attempt {attempt})",
+                    resp.status()
+                )
+            }
+            Err(e) => {
+                metrics::counter!("terrarium_webhook_deliveries_total", "event" => payload.event.clone(), "result" => "error").increment(1);
+                metrics::histogram!("terrarium_webhook_delivery_duration_seconds", "event" => payload.event.clone(), "result" => "error").record(started.elapsed().as_secs_f64());
+                tracing::warn!("Webhook {url} error: {e} (attempt {attempt})")
+            }
         }
     }
     tracing::error!("Webhook {url} failed after 4 attempts");
