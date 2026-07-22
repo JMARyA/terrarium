@@ -274,7 +274,7 @@ fn zip_filename(tp: &str, ver: &str, os: &str, arch: &str) -> String {
 }
 
 fn hex_sha256(data: &[u8]) -> String {
-    format!("{:x}", Sha256::digest(data))
+    Sha256::digest(data).iter().map(|b| format!("{b:02x}")).collect()
 }
 
 /// zh: hash — SHA-256 of the zip bytes, lowercase-hex encoded.
