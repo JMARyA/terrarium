@@ -5,7 +5,7 @@
 //! ANSI colour, the web UI renders it as HTML. Keeping the computation here
 //! means both stay in sync.
 
-use facet_diff::FacetDiff;
+use rediff::FacetDiff;
 use std::collections::HashMap;
 
 use crate::tfstate::{TfResource, TfState};
