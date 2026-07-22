@@ -32,6 +32,6 @@ colored = "2"
 which = "7"
 sha2 = "0.10"
 pulldown-cmark = "0.13"
-zip = "2"
+zip = "8"
 metrics = "0.24"
 metrics-exporter-prometheus = { version = "0.16", default-features = false }
