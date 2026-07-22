@@ -20,7 +20,7 @@ dashmap = "6.1.0"
 authur = { git = "https://git.hydrar.de/jmarya/authur", features = [ "axum" ] }
 argh = "0.1.13"
 chrono = { version = "0.4", features = ["serde"] }
-reqwest = { version = "0.12", features = ["json"] }
+reqwest = { version = "0.13", features = ["json"] }
 toml = "0.9"
 dirs = "5"
 facet = "0.43"
