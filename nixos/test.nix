@@ -314,8 +314,20 @@ pkgs.testers.runNixOSTest {
         "http://localhost:8080/registry/mirror/example.com/test/myprovider/1.0.0.json"
     )
     assert "archives" in out, f"archives missing from mirror version: {out}"
-    assert "zh:" in out, f"zh: hash missing from mirror: {out}"
     assert "linux_amd64" in out, f"platform missing from mirror: {out}"
+
+    # Regression: the mirror's "zh:" hash must be the lowercase-hex SHA-256
+    # of the zip (OpenTofu's PackageHashLegacyZipSHA scheme), not base64. A
+    # base64-encoded hash here parses fine as JSON but never matches what
+    # OpenTofu computes locally, so `tofu init` through a network_mirror
+    # fails with "provider package doesn't match the expected checksum"
+    # even though the underlying zip is byte-identical.
+    mirror_version = json.loads(out)
+    mirror_hashes = mirror_version["archives"]["linux_amd64"]["hashes"]
+    assert mirror_hashes == [f"zh:{orig}"], (
+        f"mirror zh: hash must be zh:{orig} (lowercase-hex sha256 of the "
+        f"zip); got {mirror_hashes}"
+    )
 
     # OpenTofu end-to-end: download the provider from terrarium and hand it to
     # tofu via a filesystem mirror (OpenTofu requires HTTPS for network mirrors,

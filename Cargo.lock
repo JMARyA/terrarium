@@ -2862,7 +2862,6 @@ dependencies = [
  "argh",
  "authur",
  "axum",
- "base64",
  "bytes",
  "chrono",
  "colored",

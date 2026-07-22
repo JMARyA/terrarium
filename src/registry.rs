@@ -29,7 +29,6 @@ use axum::{
     http::{StatusCode, header},
     response::{IntoResponse, Response},
 };
-use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
@@ -278,10 +277,11 @@ fn hex_sha256(data: &[u8]) -> String {
     format!("{:x}", Sha256::digest(data))
 }
 
-/// zh: hash — SHA-256 of the zip bytes, base64-encoded.
-/// OpenTofu accepts this in network mirror version JSON.
+/// zh: hash — SHA-256 of the zip bytes, lowercase-hex encoded.
+/// OpenTofu accepts this in network mirror version JSON; it must match the
+/// hex encoding produced by `PackageHashLegacyZipSHA`, not base64.
 fn zh_hash(data: &[u8]) -> String {
-    format!("zh:{}", BASE64.encode(Sha256::digest(data)))
+    format!("zh:{}", hex_sha256(data))
 }
 
 fn read_subdirs(dir: &std::path::Path) -> impl Iterator<Item = std::fs::DirEntry> {
