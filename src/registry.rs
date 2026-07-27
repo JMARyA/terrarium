@@ -494,7 +494,7 @@ pub async fn upload_provider(
     body: Bytes,
 ) -> StatusCode {
     if body.is_empty() {
-        metrics::counter!("terrarium_registry_uploads_total", "result" => "bad_request").increment(1);
+        metrics::counter!("terrarium_registry_uploads_total", "namespace" => ns.clone(), "type" => tp.clone(), "result" => "bad_request").increment(1);
         return StatusCode::BAD_REQUEST;
     }
 
@@ -503,7 +503,7 @@ pub async fn upload_provider(
         .unwrap_or_else(|| vec!["5.0".into(), "6.0".into()]);
 
     app.registry.store_binary(&ns, &tp, &ver, &os, &arch, &body, protocols, SigningKeys::default(), q.docs);
-    metrics::counter!("terrarium_registry_uploads_total", "result" => "ok").increment(1);
+    metrics::counter!("terrarium_registry_uploads_total", "namespace" => ns.clone(), "type" => tp.clone(), "result" => "ok").increment(1);
     tracing::info!("📦 Registry: uploaded {ns}/{tp} {ver} {os}_{arch}");
     StatusCode::OK
 }
@@ -549,11 +549,11 @@ pub async fn serve_binary(
     let data = match app.registry.get_zip(&ns, &tp, &ver, &os, &arch) {
         Some(data) => data,
         None => {
-            metrics::counter!("terrarium_registry_downloads_total", "result" => "not_found").increment(1);
+            metrics::counter!("terrarium_registry_downloads_total", "namespace" => ns.clone(), "type" => tp.clone(), "result" => "not_found").increment(1);
             return Err(StatusCode::NOT_FOUND);
         }
     };
-    metrics::counter!("terrarium_registry_downloads_total", "result" => "ok").increment(1);
+    metrics::counter!("terrarium_registry_downloads_total", "namespace" => ns.clone(), "type" => tp.clone(), "result" => "ok").increment(1);
     let fname = zip_filename(&tp, &ver, &os, &arch);
     Ok((
         [(header::CONTENT_TYPE, "application/zip"),

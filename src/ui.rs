@@ -262,16 +262,22 @@ pub struct LoginForm {
 
 pub async fn login_submit(State(app): State<AppState>, Form(f): Form<LoginForm>) -> Response {
     match app.users.login(&f.username, &f.password).await {
-        Some((session, _roles)) => (
-            [(header::SET_COOKIE, set_cookie(&session.token))],
-            Redirect::to("/"),
-        )
-            .into_response(),
-        None => (
-            StatusCode::UNAUTHORIZED,
-            login_form(Some("Invalid username or password")),
-        )
-            .into_response(),
+        Some((session, _roles)) => {
+            metrics::counter!("terrarium_auth_logins_total", "result" => "success").increment(1);
+            (
+                [(header::SET_COOKIE, set_cookie(&session.token))],
+                Redirect::to("/"),
+            )
+                .into_response()
+        }
+        None => {
+            metrics::counter!("terrarium_auth_logins_total", "result" => "failure").increment(1);
+            (
+                StatusCode::UNAUTHORIZED,
+                login_form(Some("Invalid username or password")),
+            )
+                .into_response()
+        }
     }
 }
 
@@ -716,9 +722,11 @@ pub struct CreateTokenForm {
 
 pub async fn token_create(UserAuth(user): UserAuth, State(app): State<AppState>, Form(f): Form<CreateTokenForm>) -> Response {
     if !app.users.verify_csrf(&f.csrf, &user.username).await {
+        metrics::counter!("terrarium_auth_csrf_failures_total", "action" => "token_create").increment(1);
         return (StatusCode::FORBIDDEN, page("Tokens", Some(&user.username), r#"<div class="err">Invalid CSRF token — reload and try again.</div>"#)).into_response();
     }
     let session = app.users.api_key(f.name.trim(), &user.username).await;
+    metrics::counter!("terrarium_auth_token_operations_total", "action" => "create").increment(1);
     let body = format!(
         r#"<h1>API token created</h1>
         <div class="panel"><p>Copy this token now — it will not be shown again.</p>
@@ -736,6 +744,7 @@ pub struct RevokeForm {
 
 pub async fn token_revoke(UserAuth(user): UserAuth, State(app): State<AppState>, Path(id): Path<String>, Form(f): Form<RevokeForm>) -> Response {
     if !app.users.verify_csrf(&f.csrf, &user.username).await {
+        metrics::counter!("terrarium_auth_csrf_failures_total", "action" => "token_revoke").increment(1);
         return (StatusCode::FORBIDDEN, page("Tokens", Some(&user.username), r#"<div class="err">Invalid CSRF token — reload and try again.</div>"#)).into_response();
     }
     // Only allow revoking the caller's own sessions.
@@ -747,6 +756,7 @@ pub async fn token_revoke(UserAuth(user): UserAuth, State(app): State<AppState>,
         .any(|s| s.id == id);
     if owned {
         app.users.end_session(&id).await;
+        metrics::counter!("terrarium_auth_token_operations_total", "action" => "revoke").increment(1);
     }
     Redirect::to("/tokens").into_response()
 }

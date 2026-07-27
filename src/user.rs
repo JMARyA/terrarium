@@ -16,9 +16,18 @@ pub async fn change_own_password(
     State(app): State<AppState>,
     Json(body): Json<ChangePasswordBody>,
 ) -> Result<StatusCode, StatusCode> {
-    app.users
+    match app
+        .users
         .passwd(&user.username, &body.current_password, &body.new_password)
         .await
-        .map(|_| StatusCode::OK)
-        .map_err(|_| StatusCode::UNAUTHORIZED)
+    {
+        Ok(_) => {
+            metrics::counter!("terrarium_auth_password_changes_total", "result" => "ok").increment(1);
+            Ok(StatusCode::OK)
+        }
+        Err(_) => {
+            metrics::counter!("terrarium_auth_password_changes_total", "result" => "error").increment(1);
+            Err(StatusCode::UNAUTHORIZED)
+        }
+    }
 }

@@ -131,7 +131,7 @@ pub async fn lock(
 
     if app.state.is_archived(&name) {
         tracing::info!("📦 State {name} is archived, rejecting lock");
-        metrics::counter!("terrarium_lock_acquires_total", "result" => "forbidden", "operation" => crate::observability::lock_operation(info.Operation.as_ref())).increment(1);
+        metrics::counter!("terrarium_lock_acquires_total", "workspace" => name.clone(), "result" => "forbidden", "operation" => crate::observability::lock_operation(info.Operation.as_ref())).increment(1);
         return Err(StatusCode::FORBIDDEN);
     }
 
@@ -139,14 +139,14 @@ pub async fn lock(
 
     if let Some(_) = locks.get(&name) {
         tracing::info!("🔒 Already existing lock for {name}");
-        metrics::counter!("terrarium_lock_acquires_total", "result" => "conflict", "operation" => crate::observability::lock_operation(info.Operation.as_ref())).increment(1);
-        metrics::counter!("terrarium_lock_conflicts_total").increment(1);
+        metrics::counter!("terrarium_lock_acquires_total", "workspace" => name.clone(), "result" => "conflict", "operation" => crate::observability::lock_operation(info.Operation.as_ref())).increment(1);
+        metrics::counter!("terrarium_lock_conflicts_total", "workspace" => name.clone()).increment(1);
         return Err(StatusCode::CONFLICT);
     }
 
     tracing::info!("🔒 Acquired lock for {name}: {info:#?}");
     locks.insert(&name, info.clone());
-    metrics::counter!("terrarium_lock_acquires_total", "result" => "ok", "operation" => crate::observability::lock_operation(info.Operation.as_ref())).increment(1);
+    metrics::counter!("terrarium_lock_acquires_total", "workspace" => name.clone(), "result" => "ok", "operation" => crate::observability::lock_operation(info.Operation.as_ref())).increment(1);
     app.webhooks
         .fire("lock.acquire", &name, None, _auth.0.username.as_str())
         .await;
@@ -171,12 +171,12 @@ pub async fn lock_method_compat(
             tracing::info!("🔒 Trying to lock {name}");
 
             if app.state.is_archived(&name) {
-                metrics::counter!("terrarium_lock_acquires_total", "result" => "forbidden", "operation" => "unknown").increment(1);
+                metrics::counter!("terrarium_lock_acquires_total", "workspace" => name.clone(), "result" => "forbidden", "operation" => "unknown").increment(1);
                 return StatusCode::FORBIDDEN.into_response();
             }
             if app.locks.get(&name).is_some() {
-                metrics::counter!("terrarium_lock_acquires_total", "result" => "conflict", "operation" => "unknown").increment(1);
-                metrics::counter!("terrarium_lock_conflicts_total").increment(1);
+                metrics::counter!("terrarium_lock_acquires_total", "workspace" => name.clone(), "result" => "conflict", "operation" => "unknown").increment(1);
+                metrics::counter!("terrarium_lock_conflicts_total", "workspace" => name.clone()).increment(1);
                 return StatusCode::CONFLICT.into_response();
             }
 
@@ -191,7 +191,7 @@ pub async fn lock_method_compat(
 
             tracing::info!("🔒 Acquired lock for {name}: {info:#?}");
             app.locks.insert(&name, info.clone());
-            metrics::counter!("terrarium_lock_acquires_total", "result" => "ok", "operation" => crate::observability::lock_operation(info.Operation.as_ref())).increment(1);
+            metrics::counter!("terrarium_lock_acquires_total", "workspace" => name.clone(), "result" => "ok", "operation" => crate::observability::lock_operation(info.Operation.as_ref())).increment(1);
             app.webhooks
                 .fire("lock.acquire", &name, None, &user.username)
                 .await;
@@ -201,14 +201,14 @@ pub async fn lock_method_compat(
             tracing::info!("🔓 Unlocking {name}");
             if let Some(info) = app.locks.remove(&name) {
                 tracing::info!("🔓 Unlocked {name}");
-                metrics::counter!("terrarium_lock_releases_total", "result" => "ok").increment(1);
-                crate::observability::observe_lock_age(&info);
+                metrics::counter!("terrarium_lock_releases_total", "workspace" => name.clone(), "result" => "ok").increment(1);
+                crate::observability::observe_lock_age(&name, &info);
                 app.webhooks
                     .fire("lock.release", &name, None, &user.username)
                     .await;
                 Json(info).into_response()
             } else {
-                metrics::counter!("terrarium_lock_releases_total", "result" => "not_found")
+                metrics::counter!("terrarium_lock_releases_total", "workspace" => name.clone(), "result" => "not_found")
                     .increment(1);
                 StatusCode::NOT_FOUND.into_response()
             }
@@ -229,14 +229,14 @@ pub async fn unlock(
 
     if let Some(info) = locks.remove(&name) {
         tracing::info!("🔓 Unlocked {name}");
-        metrics::counter!("terrarium_lock_releases_total", "result" => "ok").increment(1);
-        crate::observability::observe_lock_age(&info);
+        metrics::counter!("terrarium_lock_releases_total", "workspace" => name.clone(), "result" => "ok").increment(1);
+        crate::observability::observe_lock_age(&name, &info);
         app.webhooks
             .fire("lock.release", &name, None, &user.username)
             .await;
         Ok(Json(info))
     } else {
-        metrics::counter!("terrarium_lock_releases_total", "result" => "not_found").increment(1);
+        metrics::counter!("terrarium_lock_releases_total", "workspace" => name.clone(), "result" => "not_found").increment(1);
         Err(StatusCode::NOT_FOUND)
     }
 }

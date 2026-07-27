@@ -153,9 +153,26 @@ async fn collect(app: &AppState, data_dir: &Path) {
     for name in &active_states {
         if let Some(bytes) = app.state.get(name) {
             histogram!("terrarium_state_size_bytes").record(bytes.len() as f64);
+            gauge!("terrarium_state_current_bytes", "workspace" => name.clone())
+                .set(bytes.len() as f64);
+            if let Some((resources, instances, outputs)) = state_counts(&bytes) {
+                gauge!("terrarium_tf_resources_total", "workspace" => name.clone())
+                    .set(resources as f64);
+                gauge!("terrarium_tf_resource_instances_total", "workspace" => name.clone())
+                    .set(instances as f64);
+                gauge!("terrarium_tf_outputs_total", "workspace" => name.clone())
+                    .set(outputs as f64);
+            }
+            if let Some(serial) = state_serial(&bytes) {
+                gauge!("terrarium_state_serial", "workspace" => name.clone()).set(serial as f64);
+            }
         }
         histogram!("terrarium_state_versions_per_state")
             .record(app.state.list_versions(name).len() as f64);
+        if let Some(ts) = latest_version_mtime(&app.state, name) {
+            gauge!("terrarium_state_last_activity_timestamp_seconds", "workspace" => name.clone())
+                .set(ts as f64);
+        }
     }
 
     let current_bytes = dir_size(&data_dir.join("state"));
@@ -174,13 +191,12 @@ async fn collect(app: &AppState, data_dir: &Path) {
 
     gauge!("terrarium_webhooks_registered").set(app.webhooks.hooks.read().await.len() as f64);
 
-    let (resources, managed, data, instances, outputs, sensitive_outputs) =
+    // Per-workspace resource/instance/output totals are emitted in the loop
+    // above; only the mode split and sensitive-output count stay aggregate-only.
+    let (_resources, managed, data, _instances, _outputs, sensitive_outputs) =
         tf_aggregates(&app.state, &active_states);
-    gauge!("terrarium_tf_resources_total").set(resources as f64);
     gauge!("terrarium_tf_resources_by_mode_total", "mode" => "managed").set(managed as f64);
     gauge!("terrarium_tf_resources_by_mode_total", "mode" => "data").set(data as f64);
-    gauge!("terrarium_tf_resource_instances_total").set(instances as f64);
-    gauge!("terrarium_tf_outputs_total").set(outputs as f64);
     gauge!("terrarium_tf_sensitive_outputs_total").set(sensitive_outputs as f64);
 
     let providers_dir = data_dir.join("registry").join("providers");
@@ -197,10 +213,102 @@ async fn collect(app: &AppState, data_dir: &Path) {
             gauge!("terrarium_registry_mirror_last_success_timestamp_seconds").set(ts as f64);
         }
     }
+    if let (Some(started), Some(finished)) = (mirror.last_sync_started, mirror.last_sync_finished) {
+        if finished >= started {
+            gauge!("terrarium_registry_mirror_last_duration_seconds").set((finished - started) as f64);
+        }
+    }
+    drop(mirror);
+
+    // ── Fleet composition (aggregate-only: keyed by version/provider/type,
+    // never multiplied by workspace, so cardinality stays bounded) ──
+    let fleet = fleet_composition(&app.state, &active_states);
+    for (version, count) in &fleet.versions {
+        gauge!("terrarium_tf_version_states", "version" => version.clone()).set(*count as f64);
+    }
+    for (provider, count) in &fleet.provider_resources {
+        gauge!("terrarium_tf_provider_resources", "provider" => provider.clone()).set(*count as f64);
+    }
+    for (rtype, count) in &fleet.resource_types {
+        gauge!("terrarium_tf_resource_type_total", "type" => rtype.clone()).set(*count as f64);
+    }
+
+    // ── Auth surface (aggregate-only, no usernames) ──
+    let users = app.users.find_all().await;
+    gauge!("terrarium_users_total").set(users.len() as f64);
+    let (mut user_sessions, mut api_sessions) = (0usize, 0usize);
+    for u in &users {
+        // API keys are created with a name; interactive login sessions are not.
+        // (SessionKind itself is not re-exported by authur, so we use that proxy.)
+        for s in authur::Sessions::list_sessions(&app.users, u).await {
+            if s.name.is_some() {
+                api_sessions += 1;
+            } else {
+                user_sessions += 1;
+            }
+        }
+    }
+    gauge!("terrarium_auth_sessions_active", "kind" => "user").set(user_sessions as f64);
+    gauge!("terrarium_auth_sessions_active", "kind" => "api").set(api_sessions as f64);
 
     if let Some(start) = START.get() {
         gauge!("terrarium_uptime_seconds").set(start.elapsed().as_secs_f64());
     }
+}
+
+/// Fleet-wide composition across all current states. Deliberately keyed only by
+/// version / provider / resource-type — never by workspace — so the label
+/// cardinality is bounded by how many distinct versions/providers/types exist,
+/// not by workspace count.
+#[derive(Default)]
+struct Fleet {
+    /// Number of states on each Terraform/OpenTofu version.
+    versions: std::collections::HashMap<String, usize>,
+    /// Resource count per provider across the fleet.
+    provider_resources: std::collections::HashMap<String, usize>,
+    /// Resource count per resource type across the fleet.
+    resource_types: std::collections::HashMap<String, usize>,
+}
+
+fn fleet_composition(state: &crate::state::StateContainer, names: &[String]) -> Fleet {
+    let mut fleet = Fleet::default();
+    for name in names {
+        let Some(bytes) = state.get(name) else { continue };
+        let Ok(value) = serde_json::from_slice::<serde_json::Value>(&bytes) else {
+            continue;
+        };
+        if let Some(v) = value.get("terraform_version").and_then(|v| v.as_str()) {
+            let v = if v.is_empty() { "unknown" } else { v };
+            *fleet.versions.entry(v.to_string()).or_default() += 1;
+        }
+        if let Some(arr) = value.get("resources").and_then(|v| v.as_array()) {
+            for r in arr {
+                if let Some(p) = normalize_provider(r.get("provider").and_then(|v| v.as_str())) {
+                    *fleet.provider_resources.entry(p).or_default() += 1;
+                }
+                if let Some(t) = r.get("type").and_then(|v| v.as_str()) {
+                    *fleet.resource_types.entry(t.to_string()).or_default() += 1;
+                }
+            }
+        }
+    }
+    fleet
+}
+
+/// Reduce a Terraform provider reference to a stable short name.
+/// e.g. `provider["registry.terraform.io/hashicorp/aws"]` -> `hashicorp/aws`.
+fn normalize_provider(raw: Option<&str>) -> Option<String> {
+    let raw = raw?;
+    let inner = raw
+        .split_once('[')
+        .and_then(|(_, rest)| rest.rsplit_once(']').map(|(v, _)| v))
+        .unwrap_or(raw)
+        .trim_matches('"');
+    let short = inner.rsplit('/').take(2).collect::<Vec<_>>();
+    if short.is_empty() {
+        return None;
+    }
+    Some(short.into_iter().rev().collect::<Vec<_>>().join("/"))
 }
 
 fn tf_aggregates(
@@ -258,6 +366,14 @@ fn tf_aggregates(
     )
 }
 
+/// Terraform/OpenTofu state's own monotonically increasing write counter.
+/// Useful for spotting a workspace that's drifted from what a client expects
+/// (the classic "serial mismatch" concurrent-modification symptom).
+pub fn state_serial(bytes: &[u8]) -> Option<u64> {
+    let value = serde_json::from_slice::<serde_json::Value>(bytes).ok()?;
+    value.get("serial").and_then(|v| v.as_u64())
+}
+
 pub fn state_counts(bytes: &[u8]) -> Option<(usize, usize, usize)> {
     let value = serde_json::from_slice::<serde_json::Value>(bytes).ok()?;
     let resources = value
@@ -287,7 +403,7 @@ pub fn state_counts(bytes: &[u8]) -> Option<(usize, usize, usize)> {
     Some((resources, instances, outputs))
 }
 
-pub fn observe_delta(metric: &'static str, before: usize, after: usize) {
+pub fn observe_delta(metric: &'static str, workspace: &str, before: usize, after: usize) {
     let direction = if after > before {
         "positive"
     } else if after < before {
@@ -296,12 +412,19 @@ pub fn observe_delta(metric: &'static str, before: usize, after: usize) {
         "zero"
     };
     let delta = after.abs_diff(before) as f64;
-    histogram!(metric, "direction" => direction).record(delta);
+    histogram!(metric, "workspace" => workspace.to_string(), "direction" => direction).record(delta);
 }
 
-pub fn observe_lock_age(info: &crate::lock::LockInfo) {
+pub fn unix_now() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
+}
+
+pub fn observe_lock_age(workspace: &str, info: &crate::lock::LockInfo) {
     if let Some(age) = lock_age_seconds(info) {
-        histogram!("terrarium_lock_age_seconds").record(age as f64);
+        histogram!("terrarium_lock_age_seconds", "workspace" => workspace.to_string()).record(age as f64);
     }
 }
 
@@ -330,6 +453,19 @@ fn lock_age_seconds(lock: &crate::lock::LockInfo) -> Option<u64> {
     let now = chrono::Utc::now();
     (now - created.with_timezone(&chrono::Utc))
         .to_std()
+        .ok()
+        .map(|d| d.as_secs())
+}
+
+/// Modification time of the newest retained version file for a workspace, as
+/// a Unix timestamp. Used to backfill last-activity for workspaces that
+/// haven't been pushed to since the server last started.
+fn latest_version_mtime(state: &crate::state::StateContainer, name: &str) -> Option<u64> {
+    let version = state.list_versions(name).last().copied()?;
+    let path = state.versions_dir.join(name).join(version.to_string());
+    let modified = std::fs::metadata(path).ok()?.modified().ok()?;
+    modified
+        .duration_since(std::time::UNIX_EPOCH)
         .ok()
         .map(|d| d.as_secs())
 }
@@ -507,6 +643,26 @@ mod tests {
     }
 
     #[test]
+    fn state_serial_reads_the_write_counter() {
+        assert_eq!(state_serial(br#"{"serial": 17}"#), Some(17));
+        assert_eq!(state_serial(br#"{}"#), None);
+        assert_eq!(state_serial(b"not json"), None);
+    }
+
+    #[test]
+    fn normalize_provider_shortens_registry_refs() {
+        assert_eq!(
+            normalize_provider(Some(r#"provider["registry.terraform.io/hashicorp/aws"]"#)),
+            Some("hashicorp/aws".to_string())
+        );
+        assert_eq!(
+            normalize_provider(Some("provider.aws")),
+            Some("provider.aws".to_string())
+        );
+        assert_eq!(normalize_provider(None), None);
+    }
+
+    #[test]
     fn scrub_path_normalizes_sensitive_paths() {
         assert_eq!(scrub_path("/state/infra/prod"), "/state/{*name}");
         assert_eq!(scrub_path("/lock/infra/prod"), "/lock/{*name}");
@@ -514,5 +670,28 @@ mod tests {
             scrub_path("/registry/providers/ns/type/1/linux/amd64/zip"),
             "/registry/..."
         );
+    }
+
+    #[test]
+    fn observe_delta_includes_workspace_label() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let recorder = metrics_util::debugging::DebuggingRecorder::new();
+        let snapshotter = recorder.snapshotter();
+        // Only one test in the whole run may install a global recorder; keep
+        // this the sole test that does so.
+        if recorder.install().is_err() {
+            return;
+        }
+
+        observe_delta("terrarium_tf_resource_delta", "infra/prod", 1, 3);
+
+        let has_workspace_label = snapshotter.snapshot().into_vec().iter().any(|(key, ..)| {
+            key.key().name() == "terrarium_tf_resource_delta"
+                && key
+                    .key()
+                    .labels()
+                    .any(|l| l.key() == "workspace" && l.value() == "infra/prod")
+        });
+        assert!(has_workspace_label, "expected workspace label on delta histogram");
     }
 }

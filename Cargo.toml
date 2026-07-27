@@ -35,3 +35,6 @@ pulldown-cmark = "0.13"
 zip = "8"
 metrics = "0.24"
 metrics-exporter-prometheus = { version = "0.18", default-features = false }
+
+[dev-dependencies]
+metrics-util = { version = "0.20", default-features = false, features = ["debugging"] }
