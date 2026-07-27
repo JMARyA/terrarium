@@ -172,7 +172,8 @@ The dashboard is organized around:
 
 | Metric | Type | Labels | Description |
 | --- | --- | --- | --- |
-| `terrarium_state_pushes_total` | counter | `workspace`, `result` | State push attempts. |
+| `terrarium_state_pushes_total` | counter | `workspace`, `result` | State push attempts. `result="error"` means the write to disk failed. |
+| `terrarium_state_write_errors_total` | counter | `workspace` | State writes that failed at the filesystem layer (e.g. the data volume is full). The push is rejected with `500` and the existing state is left intact. |
 | `terrarium_state_pulls_total` | counter | `workspace`, `result` | State pull attempts. |
 | `terrarium_state_push_bytes` | histogram | `workspace` | Size of pushed state blobs. |
 | `terrarium_state_pull_bytes` | histogram | `workspace` | Size of pulled state blobs. |
@@ -360,6 +361,14 @@ groups:
           severity: warning
         annotations:
           summary: Terrarium state writes are failing
+
+      - alert: TerrariumStateWriteErrors
+        expr: sum(rate(terrarium_state_write_errors_total[5m])) > 0
+        for: 0m
+        labels:
+          severity: critical
+        annotations:
+          summary: Terrarium cannot persist state to disk (data volume full or read-only?)
 
       - alert: TerrariumLockStuck
         expr: terrarium_lock_max_age_seconds > 3600

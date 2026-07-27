@@ -50,21 +50,22 @@ impl StateContainer {
         // version history is intentionally kept
     }
 
-    pub fn insert(&self, name: &str, state: Vec<u8>) {
-        // Write current (head) state
-        let path = self.dir.join(name);
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent).unwrap();
-        }
-        std::fs::write(&path, &state).unwrap();
-
-        // Append versioned copy
+    /// Persist a new state revision.
+    ///
+    /// Returns an [`std::io::Error`] instead of panicking so the caller can
+    /// surface a `500` and record a metric when the underlying filesystem
+    /// fails (e.g. the data volume is full). Both writes are atomic (temp file
+    /// + rename), so a failed or partial write can never truncate or corrupt
+    /// an existing state or version file. The versioned copy is written first,
+    /// so the head is only advanced once the history entry is durable.
+    pub fn insert(&self, name: &str, state: Vec<u8>) -> std::io::Result<()> {
         let version = self.list_versions(name).last().copied().unwrap_or(0) + 1;
         let version_path = self.versions_dir.join(name).join(version.to_string());
-        if let Some(parent) = version_path.parent() {
-            std::fs::create_dir_all(parent).unwrap();
-        }
-        std::fs::write(version_path, state).unwrap();
+        atomic_write(&version_path, &state)?;
+
+        let path = self.dir.join(name);
+        atomic_write(&path, &state)?;
+        Ok(())
     }
 
     pub fn is_archived(&self, name: &str) -> bool {
@@ -112,8 +113,9 @@ impl StateContainer {
                     Some(n) => n,
                     None => continue,
                 };
-                // Never list .archived sidecar files themselves
-                if file_name.ends_with(".archived") {
+                // Never list .archived sidecar files, or leftover atomic-write
+                // temp files (`.<name>.<pid>.<seq>.tmp`) from a crashed write.
+                if file_name.ends_with(".archived") || file_name.ends_with(".tmp") {
                     continue;
                 }
                 // Filter by archived status via sidecar presence
@@ -131,6 +133,32 @@ impl StateContainer {
             }
         }
     }
+}
+
+/// Write `data` to `path` atomically: create parents, write to a unique temp
+/// file in the same directory, then rename over the target. The rename is
+/// atomic on a single filesystem, so a reader never sees a partial file and a
+/// failing write leaves any existing file untouched. The temp file is cleaned
+/// up on failure.
+fn atomic_write(path: &FsPath, data: &[u8]) -> std::io::Result<()> {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static TMP_SEQ: AtomicU64 = AtomicU64::new(0);
+
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let file_name = path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::InvalidInput, "invalid state path"))?;
+    let seq = TMP_SEQ.fetch_add(1, Ordering::Relaxed);
+    let tmp = path.with_file_name(format!(".{file_name}.{}.{seq}.tmp", std::process::id()));
+
+    let result = std::fs::write(&tmp, data).and_then(|_| std::fs::rename(&tmp, path));
+    if result.is_err() {
+        let _ = std::fs::remove_file(&tmp);
+    }
+    result
 }
 
 fn validate_name(name: &str) -> Result<(), StatusCode> {
@@ -283,7 +311,12 @@ pub async fn put_state(
     let body_len = body.len();
     let after_counts = crate::observability::state_counts(&body);
 
-    app.state.insert(&name, body.to_vec());
+    if let Err(e) = app.state.insert(&name, body.to_vec()) {
+        tracing::error!("💥 Failed to persist state for {name}: {e}");
+        metrics::counter!("terrarium_state_write_errors_total", "workspace" => name.clone()).increment(1);
+        metrics::counter!("terrarium_state_pushes_total", "workspace" => name.clone(), "result" => "error").increment(1);
+        return Err(StatusCode::INTERNAL_SERVER_ERROR);
+    }
     metrics::counter!("terrarium_state_pushes_total", "workspace" => name.clone(), "result" => "ok").increment(1);
     metrics::counter!("terrarium_state_version_creations_total", "workspace" => name.clone()).increment(1);
     metrics::histogram!("terrarium_state_push_bytes", "workspace" => name.clone()).record(body_len as f64);
@@ -324,4 +357,51 @@ pub async fn delete_state(
     metrics::counter!("terrarium_state_deletions_total", "workspace" => name.clone(), "result" => "ok").increment(1);
     app.webhooks.fire("state.delete", &name, None, &user.username).await;
     Ok(StatusCode::OK)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn tmp_container() -> (StateContainer, PathBuf) {
+        let base = std::env::temp_dir().join(format!(
+            "terrarium-state-test-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let c = StateContainer::new(base.join("state"), base.join("versions"));
+        (c, base)
+    }
+
+    #[test]
+    fn insert_persists_head_and_version() {
+        let (c, base) = tmp_container();
+        c.insert("infra/prod", b"v1".to_vec()).unwrap();
+        c.insert("infra/prod", b"v2".to_vec()).unwrap();
+
+        assert_eq!(c.get("infra/prod").as_deref(), Some(&b"v2"[..]));
+        assert_eq!(c.list_versions("infra/prod"), vec![1, 2]);
+        assert_eq!(c.get_version("infra/prod", 1).as_deref(), Some(&b"v1"[..]));
+        // A nested workspace must be the only listed state (no temp/sidecar noise).
+        assert_eq!(c.list(None, false), vec!["infra/prod".to_string()]);
+
+        let _ = std::fs::remove_dir_all(base);
+    }
+
+    #[test]
+    fn atomic_write_leaves_no_temp_files() {
+        let (c, base) = tmp_container();
+        c.insert("app", b"data".to_vec()).unwrap();
+        // No leftover ".*.tmp" files in the state dir after a successful write.
+        let leftovers: Vec<_> = std::fs::read_dir(&c.dir)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .filter(|e| e.file_name().to_string_lossy().ends_with(".tmp"))
+            .collect();
+        assert!(leftovers.is_empty(), "unexpected temp files: {leftovers:?}");
+        let _ = std::fs::remove_dir_all(base);
+    }
 }
