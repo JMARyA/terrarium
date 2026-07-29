@@ -42,6 +42,7 @@ pub enum SubCommand {
     Serve(ServeCommand),
     User(UserCommand),
     Remote(RemoteCommand),
+    Policy(PolicyCommand),
     TerrariumLogin(TerrariumLoginCommand),
 
     // ── Terranix commands ──
@@ -153,6 +154,9 @@ pub struct PlanCommand {
     /// show full OpenTofu output instead of the brief summary
     #[argh(switch)]
     pub detail: bool,
+    /// policy check mode: enforce, warn or off
+    #[argh(option)]
+    pub policy: Option<String>,
 }
 
 #[derive(FromArgs)]
@@ -201,6 +205,9 @@ pub struct ApplyCommand {
     /// show full OpenTofu output instead of the brief summary
     #[argh(switch)]
     pub detail: bool,
+    /// policy check mode: enforce, warn or off
+    #[argh(option)]
+    pub policy: Option<String>,
 }
 
 #[derive(FromArgs)]
@@ -787,6 +794,96 @@ pub struct RemoteCommand {
     pub config: Option<String>,
     #[argh(subcommand)]
     pub subcommand: RemoteSubCommand,
+}
+
+// ── Policy commands ───────────────────────────────────────────────────────
+
+#[derive(FromArgs)]
+/// Manage Rego policies (authored locally in .terrarium/policies, pushed to the server)
+#[argh(subcommand, name = "policy")]
+pub struct PolicyCommand {
+    /// path to config file (overrides TERRARIUM_CONFIG env var)
+    #[argh(option)]
+    pub config: Option<String>,
+    #[argh(subcommand)]
+    pub subcommand: PolicySubCommand,
+}
+
+#[derive(FromArgs)]
+#[argh(subcommand)]
+pub enum PolicySubCommand {
+    List(PolicyList),
+    Test(PolicyTest),
+    Push(PolicyPush),
+    Pull(PolicyPull),
+    Diff(PolicyDiff),
+    Rm(PolicyRm),
+    Config(PolicyConfig),
+}
+
+#[derive(FromArgs)]
+/// List policies on the server
+#[argh(subcommand, name = "list")]
+pub struct PolicyList {}
+
+#[derive(FromArgs)]
+/// Evaluate local policies against a plan JSON file, without contacting the server
+#[argh(subcommand, name = "test")]
+pub struct PolicyTest {
+    /// plan or state JSON to evaluate against
+    #[argh(option)]
+    pub input: String,
+    /// evaluate as state rather than plan
+    #[argh(switch)]
+    pub state: bool,
+}
+
+#[derive(FromArgs)]
+/// Push .terrarium/policies to the server
+#[argh(subcommand, name = "push")]
+pub struct PolicyPush {
+    /// show what would change without writing
+    #[argh(switch)]
+    pub dry_run: bool,
+    /// scope pushed policies to a workspace or prefix
+    #[argh(option)]
+    pub workspace: Option<String>,
+}
+
+#[derive(FromArgs)]
+/// Fetch server policies into .terrarium/policies
+#[argh(subcommand, name = "pull")]
+pub struct PolicyPull {
+    /// workspace to fetch policies for
+    #[argh(option)]
+    pub workspace: Option<String>,
+}
+
+#[derive(FromArgs)]
+/// Compare .terrarium/policies against the server
+#[argh(subcommand, name = "diff")]
+pub struct PolicyDiff {
+    /// workspace to compare against
+    #[argh(option)]
+    pub workspace: Option<String>,
+}
+
+#[derive(FromArgs)]
+/// Remove a policy from the server
+#[argh(subcommand, name = "rm")]
+pub struct PolicyRm {
+    /// policy name
+    #[argh(positional)]
+    pub name: String,
+}
+
+#[derive(FromArgs)]
+/// Show the enforcement configuration
+#[argh(subcommand, name = "config")]
+pub struct PolicyConfig {
+    /// workspace to resolve the effective config for
+    #[argh(option)]
+    pub workspace: Option<String>,
 }
 
 #[derive(FromArgs)]

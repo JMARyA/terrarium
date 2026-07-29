@@ -47,6 +47,26 @@ pub fn load(explicit_config_path: Option<PathBuf>) -> Result<ClientConfig, Strin
     })
 }
 
+/// Load config without prompting or erroring — for callers that treat "no
+/// server configured" as a normal state rather than a failure.
+///
+/// Notably never prompts for a password: the policy check runs in the middle of
+/// `terra plan`, and stopping to ask for credentials there would be worse than
+/// skipping the check.
+pub fn load_quiet() -> Option<ClientConfig> {
+    let file = load_config_file(None).ok().flatten().unwrap_or_default();
+
+    let url = std::env::var("TERRARIUM_URL").ok().or(file.url)?;
+    let username = std::env::var("TERRARIUM_USER").ok().or(file.username)?;
+    let password = std::env::var("TERRARIUM_PASSWORD").ok().or(file.password)?;
+
+    Some(ClientConfig {
+        url: url.trim_end_matches('/').to_string(),
+        username,
+        password,
+    })
+}
+
 /// Write a config file with url, username, and password, then chmod 600.
 /// Creates parent directories as needed.
 pub fn write(path: &PathBuf, url: &str, username: &str, password: &str) -> Result<(), String> {

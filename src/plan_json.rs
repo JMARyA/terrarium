@@ -11,14 +11,78 @@ struct PlanResource {
 
 // ── Public entry points ──────────────────────────────────────────────────────
 
-pub fn run_plan_pretty(tofu: &TofuBinary, args: Vec<String>) -> ! {
+pub async fn run_plan_pretty(
+    tofu: &TofuBinary,
+    mut args: Vec<String>,
+    policy_flag: Option<&str>,
+) -> ! {
+    let mode = parse_mode_flag(policy_flag);
+
+    // Policy evaluation needs the plan as JSON, which requires a saved plan
+    // file. If the caller did not ask for one, write to a temp file and clean
+    // it up — a plan run should not leave artefacts behind.
+    let user_supplied_out = args.iter().any(|a| a == "-out");
+    let temp_out = (!user_supplied_out).then(|| {
+        let ts = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos();
+        std::env::temp_dir().join(format!("terra-plan-{ts}.tfplan"))
+    });
+
+    if let Some(ref path) = temp_out {
+        args.push("-out".to_string());
+        args.push(path.to_string_lossy().to_string());
+    }
+
     let refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
-    let status = plan_stream(tofu, &refs);
+    let (status, has_changes) = plan_stream_inner(tofu, &refs);
+
+    if status.success() && has_changes {
+        let plan_path = temp_out.clone().map(|p| p.to_string_lossy().to_string()).or_else(|| {
+            args.iter()
+                .position(|a| a == "-out")
+                .and_then(|i| args.get(i + 1))
+                .cloned()
+        });
+        if let Some(path) = plan_path {
+            // `enforcing: false` — a plan changes nothing, so violations are
+            // reported here purely so they surface before apply time.
+            crate::policy_client::gate(tofu, &path, mode, false).await;
+        }
+    }
+
+    if let Some(path) = temp_out {
+        let _ = std::fs::remove_file(path);
+    }
+
     std::process::exit(status.code().unwrap_or(1));
 }
 
-pub fn run_apply_pretty(tofu: &TofuBinary, cmd: &crate::cli::ApplyCommand) -> ! {
+/// Parse `--policy`, exiting on an unusable value rather than guessing.
+fn parse_mode_flag(raw: Option<&str>) -> Option<crate::policy::Mode> {
+    match raw {
+        None => None,
+        Some(v) => match crate::policy::Mode::parse(v.trim()) {
+            Ok(m) => Some(m),
+            Err(e) => {
+                eprintln!("{} {e}", "error:".bold().red());
+                std::process::exit(1);
+            }
+        },
+    }
+}
+
+pub async fn run_apply_pretty(tofu: &TofuBinary, cmd: &crate::cli::ApplyCommand) -> ! {
+    let mode = parse_mode_flag(cmd.policy.as_deref());
+
+    // A pre-saved plan file skips the planning path entirely, so the gate has
+    // to be applied here too — otherwise `terra apply saved.tfplan` would
+    // quietly bypass every policy.
     if let Some(ref plan_file) = cmd.plan {
+        if crate::policy_client::gate(tofu, plan_file, mode, true).await {
+            std::process::exit(1);
+        }
         let args = ["apply", "-json", "-no-color", "-auto-approve", plan_file.as_str()];
         let status = apply_stream(tofu, &args);
         std::process::exit(status.code().unwrap_or(1));
@@ -45,6 +109,14 @@ pub fn run_apply_pretty(tofu: &TofuBinary, cmd: &crate::cli::ApplyCommand) -> ! 
         std::process::exit(0);
     }
 
+    // Check before the confirmation prompt: being told a change is forbidden
+    // after typing "yes" is a worse experience than being told before.
+    if crate::policy_client::gate(tofu, &plan_file_str, mode, true).await {
+        let _ = std::fs::remove_file(&plan_file);
+        eprintln!("{}", "Apply blocked by policy.".bold().red());
+        std::process::exit(1);
+    }
+
     if !cmd.auto_approve {
         println!();
         print!("{}", "Do you want to perform these actions?\nEnter a value (yes to confirm): ".bold());
@@ -64,10 +136,6 @@ pub fn run_apply_pretty(tofu: &TofuBinary, cmd: &crate::cli::ApplyCommand) -> ! 
 }
 
 // ── Plan streaming ────────────────────────────────────────────────────────────
-
-fn plan_stream(tofu: &TofuBinary, args: &[&str]) -> std::process::ExitStatus {
-    plan_stream_inner(tofu, args).0
-}
 
 fn plan_stream_inner(tofu: &TofuBinary, args: &[&str]) -> (std::process::ExitStatus, bool) {
     let mut child = tofu.spawn_piped(args).unwrap_or_else(|e| {

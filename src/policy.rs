@@ -378,6 +378,47 @@ fn eval_one(
     Ok(out)
 }
 
+/// Compile and evaluate a set of policy sources in one go.
+///
+/// Used client-side, where policies arrive as a bundle plus whatever the
+/// repository carries and there is no long-lived store to cache them in.
+pub fn evaluate_sources(
+    sources: &[(String, String, Origin)],
+    site: Site,
+    input: &Value,
+    timeout: Duration,
+) -> Outcome {
+    let mut outcome = Outcome::default();
+
+    for (name, source, origin) in sources {
+        let (mut engine, sites) = match compile_with_timeout(name, source, timeout) {
+            Ok(v) => v,
+            Err(e) => {
+                outcome.errors.push((name.clone(), e));
+                continue;
+            }
+        };
+        if !sites.contains(&site) {
+            continue;
+        }
+        outcome.evaluated += 1;
+        match eval_one(&mut engine, site, input, name, *origin) {
+            Ok(mut v) => outcome.violations.append(&mut v),
+            Err(e) => outcome.errors.push((name.clone(), e)),
+        }
+    }
+
+    // A rule present in both the server bundle and the repository fires twice.
+    // Union preserves the "local can only add restrictions" invariant; the
+    // duplicate message is noise, so drop it while keeping the first
+    // attribution.
+    outcome.violations.dedup_by(|a, b| {
+        a.severity == b.severity && a.message == b.message && a.policy == b.policy
+    });
+
+    outcome
+}
+
 // ── Store ────────────────────────────────────────────────────────────────────
 
 struct Inner {
@@ -880,6 +921,12 @@ fn validate_name(name: &str) -> Result<(), String> {
 
 fn hash_source(source: &str) -> String {
     crate::registry::hex_sha256(source.as_bytes())
+}
+
+/// Same hash the server stores, so a client can tell whether a local policy is
+/// already on the server without uploading it first.
+pub fn hash_source_pub(source: &str) -> String {
+    hash_source(source)
 }
 
 fn now_rfc3339() -> String {

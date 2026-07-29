@@ -29,6 +29,8 @@ mod ui;
 mod auth;
 mod observability;
 pub mod policy;
+mod policy_client;
+mod policy_cmd;
 pub mod violation;
 
 #[derive(Clone)]
@@ -364,7 +366,12 @@ async fn main() {
                 let mut args = plan_args(cmd);
                 args.push("-json".to_string());
                 args.push("-no-color".to_string());
-                plan_json::run_plan_pretty(&require_tofu(tofu_binary), args)
+                plan_json::run_plan_pretty(
+                    &require_tofu(tofu_binary),
+                    args,
+                    cmd.policy.as_deref(),
+                )
+                .await
             }
         }
         cli::SubCommand::Apply(ref cmd) => {
@@ -372,7 +379,7 @@ async fn main() {
             if cmd.detail || cmd.json {
                 run_tofu(tofu_binary, apply_args(cmd))
             } else {
-                plan_json::run_apply_pretty(&require_tofu(tofu_binary), cmd)
+                plan_json::run_apply_pretty(&require_tofu(tofu_binary), cmd).await
             }
         }
         cli::SubCommand::Destroy(ref cmd) => {
@@ -520,6 +527,10 @@ async fn main() {
 
         cli::SubCommand::Remote(remote) => {
             handle_remote_command(remote).await;
+        }
+
+        cli::SubCommand::Policy(cmd) => {
+            policy_cmd::handle(cmd).await;
         }
     }
 }
