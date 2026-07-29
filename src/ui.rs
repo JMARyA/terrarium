@@ -135,6 +135,7 @@ th { color:var(--dim); font-weight:normal; } tr:last-child td { border-bottom:no
 .dim { color:var(--dim); } .green { color:var(--green); } .red { color:var(--red); } .yellow { color:var(--yellow); } .cyan { color:var(--cyan); }
 .badge { font-size:12px; padding:2px 8px; border-radius:10px; border:1px solid var(--line); }
 .badge.lock { color:var(--yellow); border-color:var(--yellow); } .badge.archived { color:var(--dim); }
+.badge.violation { color:var(--red); border-color:var(--red); } .badge.warning { color:var(--yellow); border-color:var(--yellow); }
 ul.tree { list-style:none; padding-left:18px; } ul.tree.root { padding-left:0; }
 ul.tree li { padding:2px 0; } .ns { color:var(--dim); }
 input,select { background:var(--bg); border:1px solid var(--line); color:var(--fg); padding:6px 8px; border-radius:6px; font:inherit; }
@@ -179,7 +180,7 @@ form.inline { display:flex; gap:10px; align-items:center; flex-wrap:wrap; }
 fn page(title: &str, user: Option<&str>, body: &str) -> Html<String> {
     let nav = match user {
         Some(u) => format!(
-            r#"<nav><a href="/">Workspaces</a><a href="/registry">Registry</a><a href="/tokens">Tokens</a><a href="/help">Help</a></nav>
+            r#"<nav><a href="/">Workspaces</a><a href="/policies">Policies</a><a href="/registry">Registry</a><a href="/tokens">Tokens</a><a href="/help">Help</a></nav>
                <span class="spacer"></span>
                <span class="dim">{}</span>
                <form method="post" action="/logout"><button type="submit">logout</button></form>"#,
@@ -203,7 +204,7 @@ fn page(title: &str, user: Option<&str>, body: &str) -> Html<String> {
 fn page_docs(title: &str, user: Option<&str>, body: &str) -> Html<String> {
     let nav = match user {
         Some(u) => format!(
-            r#"<nav><a href="/">Workspaces</a><a href="/registry">Registry</a><a href="/tokens">Tokens</a><a href="/help">Help</a></nav>
+            r#"<nav><a href="/">Workspaces</a><a href="/policies">Policies</a><a href="/registry">Registry</a><a href="/tokens">Tokens</a><a href="/help">Help</a></nav>
                <span class="spacer"></span>
                <span class="dim">{}</span>
                <form method="post" action="/logout"><button type="submit">logout</button></form>"#,
@@ -310,7 +311,13 @@ impl TreeNode {
         node.leaf = Some(name.to_string());
     }
 
-    fn render(&self, locks: &std::collections::HashMap<String, crate::lock::LockInfo>, out: &mut String, root: bool) {
+    fn render(
+        &self,
+        locks: &std::collections::HashMap<String, crate::lock::LockInfo>,
+        violations: &crate::violation::ViolationStore,
+        out: &mut String,
+        root: bool,
+    ) {
         out.push_str(if root {
             "<ul class=\"tree root\">"
         } else {
@@ -326,20 +333,45 @@ impl TreeNode {
                         ""
                     };
                     out.push_str(&format!(
-                        r#"<a href="/w/{}">{}</a>{}"#,
+                        r#"<a href="/w/{}">{}</a>{}{}"#,
                         esc(full),
                         esc(seg),
-                        lock
+                        lock,
+                        violation_badge(violations, full)
                     ));
                 }
                 None => out.push_str(&format!(r#"<span class="ns">{}/</span>"#, esc(seg))),
             }
             if !child.children.is_empty() {
-                child.render(locks, out, false);
+                child.render(locks, violations, out, false);
             }
             out.push_str("</li>");
         }
         out.push_str("</ul>");
+    }
+}
+
+/// Badge for a workspace's current policy status, or nothing when it is clean.
+fn violation_badge(violations: &crate::violation::ViolationStore, workspace: &str) -> String {
+    let Some(report) = violations.get(workspace) else {
+        return String::new();
+    };
+    if report.error.is_some() {
+        // Not checked is not the same as passed, and must not look like it.
+        return r#" <span class="badge warning">not checked</span>"#.to_string();
+    }
+    let denies = report.deny_count();
+    if denies > 0 {
+        format!(
+            r#" <span class="badge violation">{denies} violation{}</span>"#,
+            if denies == 1 { "" } else { "s" }
+        )
+    } else {
+        let warns = report.warn_count();
+        format!(
+            r#" <span class="badge warning">{warns} warning{}</span>"#,
+            if warns == 1 { "" } else { "s" }
+        )
     }
 }
 
@@ -365,7 +397,7 @@ pub async fn dashboard(maybe: MaybeUser, State(app): State<AppState>) -> Respons
             tree.insert(n);
         }
         body.push_str(r#"<div class="panel">"#);
-        tree.render(&locks, &mut body, true);
+        tree.render(&locks, &app.violations, &mut body, true);
         body.push_str("</div>");
     }
 
@@ -404,8 +436,46 @@ pub async fn dashboard(maybe: MaybeUser, State(app): State<AppState>) -> Respons
         body.push_str("</ul></div>");
     }
 
-    // Policy violations — placeholder until OPA lands.
-    body.push_str(r#"<h2>Policy violations</h2><div class="panel dim">No policy engine configured. (OPA integration pending.)</div>"#);
+    // Policy violations
+    let reports = app.violations.list();
+    let policy_count = app.policies.list().len();
+    body.push_str(&format!(
+        r#"<h2>Policy violations <span class="dim">({})</span></h2>"#,
+        reports.len()
+    ));
+    if policy_count == 0 {
+        body.push_str(
+            r#"<div class="panel dim">No policies configured. See <a href="/policies">Policies</a>.</div>"#,
+        );
+    } else if reports.is_empty() {
+        body.push_str(&format!(
+            r#"<div class="panel"><span class="green">All workspaces pass</span> <span class="dim">({policy_count} polic{})</span></div>"#,
+            if policy_count == 1 { "y" } else { "ies" }
+        ));
+    } else {
+        body.push_str(
+            r#"<div class="panel"><table><tr><th>Workspace</th><th>Denied</th><th>Warnings</th><th>Pushed by</th><th>Checked</th></tr>"#,
+        );
+        for r in &reports {
+            let denied = if r.error.is_some() {
+                r#"<span class="yellow">not checked</span>"#.to_string()
+            } else if r.deny_count() > 0 {
+                format!(r#"<span class="red">{}</span>"#, r.deny_count())
+            } else {
+                "0".to_string()
+            };
+            body.push_str(&format!(
+                r#"<tr><td><a href="/w/{}">{}</a></td><td>{}</td><td class="yellow">{}</td><td class="dim">{}</td><td class="dim">{}</td></tr>"#,
+                esc(&r.workspace),
+                esc(&r.workspace),
+                denied,
+                r.warn_count(),
+                esc(&r.user),
+                esc(&r.checked),
+            ));
+        }
+        body.push_str("</table></div>");
+    }
 
     page("Workspaces", Some(&user.username), &body).into_response()
 }
@@ -444,12 +514,50 @@ pub async fn workspace(maybe: MaybeUser, State(app): State<AppState>, Path(name)
     } else {
         ""
     };
-    let mut body = format!("<h1>{}{}</h1>", esc(&name), archived_badge);
+    let mut body = format!(
+        "<h1>{}{}{}</h1>",
+        esc(&name),
+        archived_badge,
+        violation_badge(&app.violations, &name)
+    );
     if app.state.get(&name).is_some() {
         body.push_str(&format!(
             r#"<p><a href="/graph/{}">↳ state overview &amp; dependency graph</a></p>"#,
             esc(&name)
         ));
+    }
+
+    // Policy status — only shown when there is something to say, so a clean
+    // workspace page stays uncluttered.
+    if let Some(report) = app.violations.get(&name) {
+        body.push_str(r#"<h2>Policy violations</h2><div class="panel">"#);
+        if let Some(err) = &report.error {
+            body.push_str(&format!(
+                r#"<span class="yellow">Could not be checked:</span> {}<br>"#,
+                esc(err)
+            ));
+        }
+        if !report.violations.is_empty() {
+            body.push_str(r#"<table><tr><th>Severity</th><th>Policy</th><th>Message</th></tr>"#);
+            for v in &report.violations {
+                let (cls, label) = match v.severity {
+                    crate::policy::Severity::Deny => ("red", "deny"),
+                    crate::policy::Severity::Warn => ("yellow", "warn"),
+                };
+                body.push_str(&format!(
+                    r#"<tr><td class="{cls}">{label}</td><td>{}</td><td>{}</td></tr>"#,
+                    esc(&v.policy),
+                    esc(&v.message),
+                ));
+            }
+            body.push_str("</table>");
+        }
+        body.push_str(&format!(
+            r#"<p class="dim">Checked {} — state pushed by {}</p>"#,
+            esc(&report.checked),
+            esc(&report.user)
+        ));
+        body.push_str("</div>");
     }
 
     // Lock status
@@ -1075,6 +1183,109 @@ pub async fn graph_view(
 // ── Registry UI ─────────────────────────────────────────────────────────────
 
 /// `GET /registry` — list all providers stored in this terrarium instance.
+/// `/policies` — what is loaded, where each policy came from, and what the
+/// enforcement configuration says.
+pub async fn policies_page(State(app): State<AppState>, maybe: MaybeUser) -> Response {
+    let Some(user) = maybe.user() else {
+        return require_login();
+    };
+
+    let policies = app.policies.list();
+    let config = app.policies.config();
+
+    let mut body = format!(
+        r#"<h1>Policies <span class="dim">({})</span></h1>"#,
+        policies.len()
+    );
+
+    if policies.is_empty() {
+        body.push_str(
+            r#"<div class="panel dim">No policies yet. Author them in <code>.terrarium/policies/</code>
+               and run <code>terra policy push</code>, or drop <code>.rego</code> files into the server's
+               <code>policies/</code> directory.</div>"#,
+        );
+    } else {
+        body.push_str(
+            r#"<div class="panel"><table><tr><th>Name</th><th>Scope</th><th>Applies to</th><th>Origin</th><th>Updated</th></tr>"#,
+        );
+        for p in &policies {
+            let scope = if p.workspace.is_empty() {
+                "global".to_string()
+            } else {
+                p.workspace.clone()
+            };
+            let sites: Vec<&str> = p
+                .sites
+                .iter()
+                .map(|s| match s {
+                    crate::policy::Site::State => "state",
+                    crate::policy::Site::Plan => "plan",
+                })
+                .collect();
+            // Origin is shown because it decides whether the API may change a
+            // policy — "why can't I delete this" should answer itself.
+            let origin = match p.origin {
+                crate::policy::Origin::Api => "api",
+                crate::policy::Origin::File => "file (read-only)",
+                crate::policy::Origin::Local => "local",
+            };
+            let disabled = if p.enabled {
+                ""
+            } else {
+                r#" <span class="badge archived">disabled</span>"#
+            };
+            body.push_str(&format!(
+                r#"<tr><td>{}{}</td><td class="cyan">{}</td><td class="dim">{}</td><td class="dim">{}</td><td class="dim">{} by {}</td></tr>"#,
+                esc(&p.name),
+                disabled,
+                esc(&scope),
+                esc(&sites.join(", ")),
+                esc(origin),
+                esc(&p.updated),
+                esc(&p.updated_by),
+            ));
+        }
+        body.push_str("</table></div>");
+    }
+
+    body.push_str("<h2>Enforcement</h2>");
+    if config.is_empty() {
+        body.push_str(
+            r#"<div class="panel dim">No scoped configuration — defaults apply: <code>deny</code> blocks
+               an apply, and pushed state is linted.</div>"#,
+        );
+    } else {
+        body.push_str(
+            r#"<div class="panel"><table><tr><th>Scope</th><th>Mode</th><th>Lint on push</th></tr>"#,
+        );
+        for c in &config {
+            let scope = if c.scope.is_empty() {
+                "global".to_string()
+            } else {
+                c.scope.clone()
+            };
+            body.push_str(&format!(
+                r#"<tr><td class="cyan">{}</td><td>{}</td><td class="dim">{}</td></tr>"#,
+                esc(&scope),
+                esc(c.mode.as_str()),
+                c.lint,
+            ));
+        }
+        body.push_str("</table></div>");
+    }
+
+    // Stated plainly rather than implied away: the client gate is a guardrail,
+    // and the server-side record is what does not depend on client cooperation.
+    body.push_str(
+        r#"<p class="dim">Policy checks in <code>terra apply</code> are a guardrail, not an access control:
+           anyone able to push state can bypass them with <code>--policy=off</code> or by running
+           <code>tofu</code> directly. Pushed state is linted server-side regardless, which is what these
+           reports are built from.</p>"#,
+    );
+
+    page("Policies", Some(&user.username), &body).into_response()
+}
+
 pub async fn registry_page(
     State(app): State<AppState>,
     maybe: MaybeUser,

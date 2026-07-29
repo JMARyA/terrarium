@@ -684,6 +684,7 @@ async fn serve(tofu_binary: Option<TofuBinary>) {
         .route("/graph/{*name}", get(ui::graph_view))
         .route("/tokens", get(ui::tokens_page).post(ui::token_create))
         .route("/tokens/{id}/revoke", post(ui::token_revoke))
+        .route("/policies", get(ui::policies_page))
         .route("/registry", get(ui::registry_page))
         .route("/registry/{namespace}/{type}", get(ui::provider_page))
         .route("/registry/{namespace}/{type}/{version}/docs", get(ui::provider_docs_index))
