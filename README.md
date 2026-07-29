@@ -20,6 +20,7 @@ Terraform state is critical, shared, and easy to corrupt. Terrarium exists becau
 - 📜 Full version history — every push is versioned, diffs included
 - 📦 Workspace archival — mark a workspace read-only permanently
 - 🪝 Webhooks — event-driven integration per workspace
+- 📜 Policy engine — Rego (OPA) rules checked before `apply` and against every pushed state
 - 🗂 Path-prefix namespacing — `infra/prod`, `apps/backend/staging`
 - 🖥 Built-in read-only web UI — workspaces, version history, state diffs, dependency graph, locks, activity
 - 🦎 Single static binary (`terra`)
@@ -93,6 +94,29 @@ Authorization: Bearer <metrics-token>
 Metrics focus on core Terrarium functions: state inventory and change velocity, Terraform resource/output aggregates, storage growth, locks, webhooks, provider registry/mirror jobs, and Terrarium API latency/errors. Metrics intentionally avoid workspace names, usernames, resource addresses, output names/values, token IDs, and webhook URLs.
 
 See `docs/observability.md` and `docs/grafana/terrarium-dashboard.json`.
+
+---
+
+## Policies
+
+Terrarium checks Rego (OPA) policies before an apply and against every pushed state. The engine is built into `terra` — no OPA binary, no sidecar.
+
+```rego
+package terrarium.plan
+
+deny contains msg if {
+    some rc in input.plan.resource_changes
+    "delete" in rc.change.actions
+    startswith(rc.address, "aws_db_instance.")
+    msg := sprintf("refusing to destroy database %s", [rc.address])
+}
+```
+
+Author policies in your repository's `.terrarium/policies/`, check them with `terra policy test` against a real plan, then `terra policy push` to share them with the team and the server-side linter.
+
+Note that the apply-time check is a **guardrail, not access control** — anyone who can push state can bypass it. What does not depend on client cooperation is the server-side lint, which records every violating state that lands.
+
+See `docs/policies.md`.
 
 ---
 
@@ -317,3 +341,11 @@ All endpoints require authentication — either HTTP Basic Auth or an `Authoriza
 | `GET`    | `/webhooks/{workspace}` | List webhooks for workspace                                |
 | `POST`   | `/webhooks/{workspace}` | Register webhook (`{ url, events[] }`)                     |
 | `DELETE` | `/webhooks/id/{id}`     | Remove webhook by ID                                       |
+| `GET`    | `/policy`               | List policies                                              |
+| `GET`    | `/policy/bundle`        | Policies with source + effective config (`?workspace=`)    |
+| `PUT`    | `/policy/{name}`        | Create/replace a policy (`{ source, workspace, enabled }`) |
+| `DELETE` | `/policy/{name}`        | Remove a policy                                            |
+| `GET`    | `/policy/config`        | Scoped enforcement configuration                           |
+| `PUT`    | `/policy/config`        | Replace enforcement configuration                          |
+| `GET`    | `/violations`           | Current violation reports                                  |
+| `GET`    | `/violations/{name}`    | Violation report for one workspace (`404` when clean)      |

@@ -6,8 +6,8 @@
 //! `terrarium.state` or `terrarium.plan` — so a policy is only ever handed the
 //! input shape it was written for.
 //!
-//! See `docs/policy-engine.md` for the design, including why server-side
-//! evaluation never rejects a push.
+//! See `docs/policies.md` for the user-facing documentation, including why
+//! server-side evaluation never rejects a push.
 
 use std::collections::HashMap;
 use std::path::{Path as FsPath, PathBuf};
