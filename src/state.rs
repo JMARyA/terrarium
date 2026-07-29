@@ -140,7 +140,7 @@ impl StateContainer {
 /// atomic on a single filesystem, so a reader never sees a partial file and a
 /// failing write leaves any existing file untouched. The temp file is cleaned
 /// up on failure.
-fn atomic_write(path: &FsPath, data: &[u8]) -> std::io::Result<()> {
+pub(crate) fn atomic_write(path: &FsPath, data: &[u8]) -> std::io::Result<()> {
     use std::sync::atomic::{AtomicU64, Ordering};
     static TMP_SEQ: AtomicU64 = AtomicU64::new(0);
 
@@ -332,6 +332,19 @@ pub async fn put_state(
         crate::observability::observe_delta("terrarium_tf_output_delta", &name, bo, ao);
     }
     let version = app.state.list_versions(&name).last().copied();
+
+    // Lint the state we just stored. Deliberately after the write and after the
+    // response is decided: server-side evaluation records what it finds and
+    // never rejects a push, so it must not be able to delay or fail one either.
+    crate::policy::spawn_state_lint(
+        app.policies.clone(),
+        app.violations.clone(),
+        name.clone(),
+        body.to_vec(),
+        user.username.clone(),
+        version,
+    );
+
     app.webhooks.fire("state.push", &name, version, &user.username).await;
     Ok(StatusCode::OK)
 }
@@ -354,6 +367,8 @@ pub async fn delete_state(
     }
 
     app.state.remove(&name);
+    // A violation report describes state that no longer exists.
+    app.violations.clear(&name);
     metrics::counter!("terrarium_state_deletions_total", "workspace" => name.clone(), "result" => "ok").increment(1);
     app.webhooks.fire("state.delete", &name, None, &user.username).await;
     Ok(StatusCode::OK)

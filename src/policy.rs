@@ -10,12 +10,18 @@
 //! evaluation never rejects a push.
 
 use std::collections::HashMap;
-use std::path::{Path, PathBuf};
+use std::path::{Path as FsPath, PathBuf};
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
 
+use axum::Json;
+use axum::extract::{Path, Query, State};
+use axum::http::StatusCode;
 use regorus::{Engine, Value};
 use serde::{Deserialize, Serialize};
+
+use crate::AppState;
+use crate::auth::AuthUser;
 
 /// Wall-clock ceiling for a single policy evaluation.
 ///
@@ -53,6 +59,10 @@ impl Severity {
             Self::Deny => "deny",
             Self::Warn => "warn",
         }
+    }
+
+    pub const fn as_str(self) -> &'static str {
+        self.rule()
     }
 }
 
@@ -149,6 +159,123 @@ impl Outcome {
 
     pub fn is_clean(&self) -> bool {
         self.violations.is_empty() && self.errors.is_empty()
+    }
+}
+
+// ── Enforcement configuration ────────────────────────────────────────────────
+
+/// What a `deny` does at the client gate.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum Mode {
+    /// `deny` blocks the apply.
+    #[default]
+    Enforce,
+    /// `deny` prints but does not block.
+    Warn,
+    /// No evaluation at all.
+    Off,
+}
+
+impl Mode {
+    pub fn parse(s: &str) -> Result<Self, String> {
+        match s {
+            "enforce" => Ok(Self::Enforce),
+            "warn" => Ok(Self::Warn),
+            "off" => Ok(Self::Off),
+            other => Err(format!(
+                "unknown policy mode {other:?} (expected enforce, warn or off)"
+            )),
+        }
+    }
+
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Enforce => "enforce",
+            Self::Warn => "warn",
+            Self::Off => "off",
+        }
+    }
+
+    /// Is `self` at least as strict as `other`?
+    ///
+    /// Used to hold the line that a repository may raise strictness but never
+    /// lower what the server asked for.
+    pub fn at_least_as_strict_as(self, other: Self) -> bool {
+        self.rank() >= other.rank()
+    }
+
+    const fn rank(self) -> u8 {
+        match self {
+            Self::Off => 0,
+            Self::Warn => 1,
+            Self::Enforce => 2,
+        }
+    }
+}
+
+/// Default ceiling on the state size the server will lint, in bytes.
+const DEFAULT_MAX_STATE_BYTES: u64 = 32 * 1024 * 1024;
+
+/// One scoped configuration entry. Scope syntax matches [`Policy::workspace`].
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ConfigEntry {
+    #[serde(default)]
+    pub scope: String,
+    #[serde(default)]
+    pub mode: Mode,
+    #[serde(default = "default_true")]
+    pub lint: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_state_bytes: Option<u64>,
+}
+
+/// The settings that actually apply to one workspace, plus where they came
+/// from — so `terra policy config` can answer "why is this the mode?".
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EffectiveConfig {
+    pub mode: Mode,
+    pub lint: bool,
+    pub max_state_bytes: u64,
+    /// Scope of the winning entry, or `None` when nothing matched and the
+    /// built-in default applies.
+    pub from_scope: Option<String>,
+}
+
+impl Default for EffectiveConfig {
+    fn default() -> Self {
+        Self {
+            mode: Mode::Enforce,
+            lint: true,
+            max_state_bytes: DEFAULT_MAX_STATE_BYTES,
+            from_scope: None,
+        }
+    }
+}
+
+/// Most specific entry wins: exact match, then longest prefix, then global.
+fn resolve_config(entries: &[ConfigEntry], workspace: &str) -> EffectiveConfig {
+    let winner = entries
+        .iter()
+        .filter(|e| scope_matches(&e.scope, workspace))
+        .max_by_key(|e| {
+            if e.scope.is_empty() {
+                0 // global
+            } else if e.scope.ends_with('/') {
+                e.scope.len() // longest prefix wins
+            } else {
+                usize::MAX // exact beats every prefix
+            }
+        });
+
+    match winner {
+        Some(e) => EffectiveConfig {
+            mode: e.mode,
+            lint: e.lint,
+            max_state_bytes: e.max_state_bytes.unwrap_or(DEFAULT_MAX_STATE_BYTES),
+            from_scope: Some(e.scope.clone()),
+        },
+        None => EffectiveConfig::default(),
     }
 }
 
@@ -255,6 +382,8 @@ fn eval_one(
 
 struct Inner {
     policies: Vec<Policy>,
+    /// Scoped enforcement configuration, most-specific-wins at read time.
+    config: Vec<ConfigEntry>,
     /// Source keyed by policy name, kept in memory to serve bundles.
     sources: HashMap<String, String>,
     /// Compiled engines keyed by **content hash**, not name: an identical
@@ -286,6 +415,7 @@ impl PolicyStore {
         let store = Self {
             inner: Arc::new(RwLock::new(Inner {
                 policies: Vec::new(),
+                config: Vec::new(),
                 sources: HashMap::new(),
                 compiled: HashMap::new(),
             })),
@@ -304,6 +434,31 @@ impl PolicyStore {
         self.dir.join(format!("{name}.rego"))
     }
 
+    fn config_path(&self) -> PathBuf {
+        self.dir.join("config.json")
+    }
+
+    /// Settings in force for a workspace (§12.1).
+    pub fn effective_config(&self, workspace: &str) -> EffectiveConfig {
+        let inner = self.inner.read().expect("policy store poisoned");
+        resolve_config(&inner.config, workspace)
+    }
+
+    pub fn config(&self) -> Vec<ConfigEntry> {
+        self.inner
+            .read()
+            .expect("policy store poisoned")
+            .config
+            .clone()
+    }
+
+    pub fn set_config(&self, entries: Vec<ConfigEntry>) -> Result<(), String> {
+        let json = serde_json::to_vec_pretty(&entries).map_err(|e| e.to_string())?;
+        atomic_write(&self.config_path(), &json).map_err(|e| e.to_string())?;
+        self.inner.write().expect("policy store poisoned").config = entries;
+        Ok(())
+    }
+
     /// Rebuild the in-memory working set from disk.
     ///
     /// Metadata drives the list, but any `.rego` file present without a metadata
@@ -316,6 +471,11 @@ impl PolicyStore {
     /// protecting anything — and deleting the `.rego` file remains the way out.
     pub fn reload(&self) {
         let meta: Vec<Policy> = std::fs::read_to_string(self.meta_path())
+            .ok()
+            .and_then(|s| serde_json::from_str(&s).ok())
+            .unwrap_or_default();
+
+        let config: Vec<ConfigEntry> = std::fs::read_to_string(self.config_path())
             .ok()
             .and_then(|s| serde_json::from_str(&s).ok())
             .unwrap_or_default();
@@ -382,6 +542,7 @@ impl PolicyStore {
 
         let mut inner = self.inner.write().expect("policy store poisoned");
         inner.policies = policies;
+        inner.config = config;
         inner.sources = sources;
         inner.compiled = compiled;
     }
@@ -433,10 +594,10 @@ impl PolicyStore {
     ) -> Result<Policy, PutError> {
         validate_name(name).map_err(PutError::Invalid)?;
 
-        if let Some(existing) = self.list().iter().find(|p| p.name == name) {
-            if existing.origin == Origin::File {
-                return Err(PutError::FileOwned);
-            }
+        if let Some(existing) = self.list().iter().find(|p| p.name == name)
+            && existing.origin == Origin::File
+        {
+            return Err(PutError::FileOwned);
         }
 
         let (engine, sites) =
@@ -555,6 +716,113 @@ impl PolicyStore {
     }
 }
 
+/// Lint a freshly-pushed state, off the request path.
+///
+/// Called *after* the state is durably written and the response is already
+/// decided, on a blocking thread. Server-side evaluation is observational: it
+/// records what it found and never rejects a push, so it must not be able to
+/// delay or fail one either.
+pub fn spawn_state_lint(
+    policies: PolicyStore,
+    violations: crate::violation::ViolationStore,
+    workspace: String,
+    state: Vec<u8>,
+    user: String,
+    version: Option<u32>,
+) {
+    let cfg = policies.effective_config(&workspace);
+    if !cfg.lint {
+        metrics::counter!("terrarium_policy_lint_skipped_total", "workspace" => workspace.clone(), "reason" => "disabled").increment(1);
+        return;
+    }
+
+    // Nothing applies here — skip the thread entirely rather than pay for one
+    // to discover there was no work.
+    if policies.applicable(&workspace, Site::State).is_empty() {
+        violations.clear(&workspace);
+        return;
+    }
+
+    if state.len() as u64 > cfg.max_state_bytes {
+        metrics::counter!("terrarium_policy_lint_skipped_total", "workspace" => workspace.clone(), "reason" => "too_large").increment(1);
+        violations.record(crate::violation::ViolationReport {
+            workspace: workspace.clone(),
+            version,
+            checked: now_rfc3339(),
+            user,
+            violations: Vec::new(),
+            error: Some(format!(
+                "state is {} bytes, above the {} byte lint limit",
+                state.len(),
+                cfg.max_state_bytes
+            )),
+        });
+        return;
+    }
+
+    tokio::task::spawn_blocking(move || {
+        let started = std::time::Instant::now();
+
+        let input = match serde_json::from_slice::<serde_json::Value>(&state) {
+            Ok(v) => serde_json::json!({ "workspace": workspace, "user": user, "state": v }),
+            Err(e) => {
+                // Terraform state is opaque to Terrarium by design, so a push
+                // that isn't JSON is not an error — it is simply not lintable.
+                tracing::debug!("Skipping policy lint for {workspace}: not JSON ({e})");
+                violations.clear(&workspace);
+                return;
+            }
+        };
+
+        let input = match Value::from_json_str(&input.to_string()) {
+            Ok(v) => v,
+            Err(e) => {
+                tracing::warn!("Failed to build policy input for {workspace}: {e}");
+                return;
+            }
+        };
+
+        let outcome = policies.evaluate(&workspace, Site::State, &input);
+
+        metrics::histogram!("terrarium_policy_evaluation_duration_seconds", "site" => "state")
+            .record(started.elapsed().as_secs_f64());
+        let result = if !outcome.errors.is_empty() {
+            "error"
+        } else if outcome.violations.is_empty() {
+            "ok"
+        } else {
+            "violation"
+        };
+        metrics::counter!("terrarium_policy_evaluations_total", "workspace" => workspace.clone(), "site" => "state", "result" => result).increment(1);
+        for v in &outcome.violations {
+            metrics::counter!("terrarium_policy_violations_total", "workspace" => workspace.clone(), "policy" => v.policy.clone(), "severity" => v.severity.as_str()).increment(1);
+        }
+
+        if !outcome.violations.is_empty() {
+            tracing::info!(
+                "🚧 {} policy violation(s) in {workspace}",
+                outcome.violations.len()
+            );
+        }
+
+        violations.record(crate::violation::ViolationReport {
+            workspace,
+            version,
+            checked: now_rfc3339(),
+            user,
+            violations: outcome.violations,
+            error: (!outcome.errors.is_empty()).then(|| {
+                outcome
+                    .errors
+                    .iter()
+                    .map(|(p, e)| format!("{p}: {e}"))
+                    .collect::<Vec<_>>()
+                    .join("; ")
+            }),
+        });
+    });
+}
+
 #[derive(Debug)]
 pub enum PutError {
     Invalid(String),
@@ -620,7 +888,7 @@ fn now_rfc3339() -> String {
 
 /// Write via temp file + rename, matching the durability the state store already
 /// commits to (`state::atomic_write`).
-fn atomic_write(path: &Path, data: &[u8]) -> std::io::Result<()> {
+fn atomic_write(path: &FsPath, data: &[u8]) -> std::io::Result<()> {
     use std::sync::atomic::{AtomicU64, Ordering};
     static TMP_SEQ: AtomicU64 = AtomicU64::new(0);
 
@@ -638,6 +906,146 @@ fn atomic_write(path: &Path, data: &[u8]) -> std::io::Result<()> {
         let _ = std::fs::remove_file(&tmp);
     }
     result
+}
+
+// ── API handlers ─────────────────────────────────────────────────────────────
+
+/// A policy with its source, as shipped to a client.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BundledPolicy {
+    #[serde(flatten)]
+    pub policy: Policy,
+    pub source: String,
+}
+
+/// What `terra plan`/`terra apply` fetches: the applicable policies *and* the
+/// config that governs them, in one round-trip so the two cannot skew.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Bundle {
+    pub workspace: String,
+    pub policies: Vec<BundledPolicy>,
+    pub config: EffectiveConfig,
+}
+
+#[derive(Deserialize)]
+pub struct BundleQuery {
+    #[serde(default)]
+    pub workspace: String,
+}
+
+#[derive(Deserialize)]
+pub struct PutPolicyBody {
+    pub source: String,
+    #[serde(default)]
+    pub workspace: String,
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+}
+
+fn put_error_response(e: PutError) -> (StatusCode, String) {
+    match e {
+        PutError::Invalid(m) => (StatusCode::BAD_REQUEST, m),
+        PutError::Compile(m) => (StatusCode::BAD_REQUEST, m),
+        PutError::FileOwned => (
+            StatusCode::CONFLICT,
+            "policy is owned by a file on the server and cannot be changed through the API"
+                .to_string(),
+        ),
+        PutError::Io(m) => (StatusCode::INTERNAL_SERVER_ERROR, m),
+    }
+}
+
+/// GET /policies — metadata only. `?workspace=` narrows to what applies there.
+pub async fn list_policies(
+    State(app): State<AppState>,
+    _auth: AuthUser,
+    Query(q): Query<BundleQuery>,
+) -> Json<Vec<Policy>> {
+    if q.workspace.is_empty() {
+        Json(app.policies.list())
+    } else {
+        Json(
+            app.policies
+                .list()
+                .into_iter()
+                .filter(|p| scope_matches(&p.workspace, &q.workspace))
+                .collect(),
+        )
+    }
+}
+
+/// GET /policies/bundle?workspace= — policies with source, plus effective config.
+pub async fn policy_bundle(
+    State(app): State<AppState>,
+    _auth: AuthUser,
+    Query(q): Query<BundleQuery>,
+) -> Json<Bundle> {
+    let policies = app
+        .policies
+        .list()
+        .into_iter()
+        .filter(|p| p.enabled && scope_matches(&p.workspace, &q.workspace))
+        .filter_map(|p| {
+            let source = app.policies.source(&p.name)?;
+            Some(BundledPolicy { policy: p, source })
+        })
+        .collect();
+
+    Json(Bundle {
+        workspace: q.workspace.clone(),
+        policies,
+        config: app.policies.effective_config(&q.workspace),
+    })
+}
+
+/// PUT /policies/{name} — create or replace, rejecting anything that will not
+/// compile so a broken rule is caught where someone can still fix it.
+pub async fn put_policy(
+    State(app): State<AppState>,
+    Path(name): Path<String>,
+    AuthUser(user): AuthUser,
+    Json(body): Json<PutPolicyBody>,
+) -> Result<Json<Policy>, (StatusCode, String)> {
+    app.policies
+        .put(
+            &name,
+            &body.source,
+            &body.workspace,
+            body.enabled,
+            &user.username,
+        )
+        .map(Json)
+        .map_err(put_error_response)
+}
+
+/// DELETE /policies/{name}
+pub async fn delete_policy(
+    State(app): State<AppState>,
+    Path(name): Path<String>,
+    _auth: AuthUser,
+) -> Result<StatusCode, (StatusCode, String)> {
+    match app.policies.remove(&name) {
+        Ok(true) => Ok(StatusCode::OK),
+        Ok(false) => Err((StatusCode::NOT_FOUND, "no such policy".to_string())),
+        Err(e) => Err(put_error_response(e)),
+    }
+}
+
+/// GET /policies/config
+pub async fn get_config(State(app): State<AppState>, _auth: AuthUser) -> Json<Vec<ConfigEntry>> {
+    Json(app.policies.config())
+}
+
+/// PUT /policies/config
+pub async fn put_config(
+    State(app): State<AppState>,
+    _auth: AuthUser,
+    Json(entries): Json<Vec<ConfigEntry>>,
+) -> Result<StatusCode, (StatusCode, String)> {
+    app.policies
+        .set_config(entries)
+        .map(|()| StatusCode::OK)
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))
 }
 
 #[cfg(test)]
@@ -947,6 +1355,75 @@ deny contains msg if {
         }
 
         let _ = std::fs::remove_dir_all(base);
+    }
+
+    fn entry(scope: &str, mode: Mode) -> ConfigEntry {
+        ConfigEntry {
+            scope: scope.to_string(),
+            mode,
+            lint: true,
+            max_state_bytes: None,
+        }
+    }
+
+    #[test]
+    fn config_default_is_enforce_when_nothing_matches() {
+        // `warn` already exists as a severity; if `deny` defaulted to not
+        // denying, the two severities would be indistinguishable.
+        let cfg = resolve_config(&[], "infra/prod");
+        assert_eq!(cfg.mode, Mode::Enforce);
+        assert!(cfg.lint);
+        assert!(cfg.from_scope.is_none());
+    }
+
+    #[test]
+    fn config_most_specific_scope_wins() {
+        let entries = vec![
+            entry("", Mode::Enforce),
+            entry("infra/", Mode::Warn),
+            entry("infra/prod", Mode::Enforce),
+            entry("infra/prod/deep/", Mode::Off),
+        ];
+
+        // Exact beats every prefix.
+        assert_eq!(resolve_config(&entries, "infra/prod").mode, Mode::Enforce);
+        // Longest prefix beats shorter.
+        assert_eq!(
+            resolve_config(&entries, "infra/prod/deep/db").mode,
+            Mode::Off
+        );
+        // Prefix beats global.
+        assert_eq!(resolve_config(&entries, "infra/staging").mode, Mode::Warn);
+        // Global is the fallback.
+        assert_eq!(resolve_config(&entries, "apps/web").mode, Mode::Enforce);
+        assert_eq!(
+            resolve_config(&entries, "apps/web").from_scope.as_deref(),
+            Some("")
+        );
+    }
+
+    #[test]
+    fn config_survives_reload() {
+        let (store, base) = tmp_store();
+        store
+            .set_config(vec![entry("sandbox/", Mode::Warn)])
+            .unwrap();
+
+        let reopened = PolicyStore::with_timeout(base.clone(), Duration::from_secs(5));
+        assert_eq!(reopened.effective_config("sandbox/x").mode, Mode::Warn);
+        assert_eq!(reopened.effective_config("other").mode, Mode::Enforce);
+
+        let _ = std::fs::remove_dir_all(base);
+    }
+
+    #[test]
+    fn mode_strictness_ordering() {
+        // A repository may raise strictness but never lower it (§13.2).
+        assert!(Mode::Enforce.at_least_as_strict_as(Mode::Warn));
+        assert!(Mode::Warn.at_least_as_strict_as(Mode::Off));
+        assert!(Mode::Enforce.at_least_as_strict_as(Mode::Enforce));
+        assert!(!Mode::Warn.at_least_as_strict_as(Mode::Enforce));
+        assert!(!Mode::Off.at_least_as_strict_as(Mode::Warn));
     }
 
     #[test]

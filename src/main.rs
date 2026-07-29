@@ -29,6 +29,7 @@ mod ui;
 mod auth;
 mod observability;
 pub mod policy;
+pub mod violation;
 
 #[derive(Clone)]
 pub struct AppState {
@@ -40,8 +41,8 @@ pub struct AppState {
     tofu: Option<TofuBinary>,
     pub registry: registry::RegistryStore,
     pub mirror_status: registry::MirrorStatusRef,
-    #[allow(dead_code)] // wired in Phase 3 (push lint) and Phase 4 (policy API)
     pub policies: policy::PolicyStore,
+    pub violations: violation::ViolationStore,
 }
 
 impl axum::extract::FromRef<AppState> for authur::UserDB<authur::vfs::PhysicalFS> {
@@ -616,6 +617,7 @@ async fn serve(tofu_binary: Option<TofuBinary>) {
         registry: registry::RegistryStore::new(data.join("registry")),
         mirror_status: std::sync::Arc::new(tokio::sync::RwLock::new(registry::MirrorStatus::default())),
         policies: policy::PolicyStore::new(data.join("policies")),
+        violations: violation::ViolationStore::new(data.join("violations")),
     };
 
     let mut app = Router::new()
@@ -637,6 +639,21 @@ async fn serve(tofu_binary: Option<TofuBinary>) {
             get(webhook::list_webhooks).post(webhook::add_webhook),
         )
         .route("/webhooks/id/{id}", axum::routing::delete(webhook::remove_webhook))
+        // ── Policy engine ──
+        // API lives under `/policy`; `/policies` is the human-facing page, the
+        // same split the registry uses.
+        .route("/policy", get(policy::list_policies))
+        .route("/policy/bundle", get(policy::policy_bundle))
+        .route(
+            "/policy/config",
+            get(policy::get_config).put(policy::put_config),
+        )
+        .route(
+            "/policy/{name}",
+            put(policy::put_policy).delete(policy::delete_policy),
+        )
+        .route("/violations", get(violation::list_violations))
+        .route("/violations/{*workspace}", get(violation::get_violations))
         // ── Provider registry ──
         .route("/.well-known/terraform.json", get(registry::service_discovery))
         .route("/registry/v1/providers/{namespace}/{type}/versions", get(registry::list_versions))
