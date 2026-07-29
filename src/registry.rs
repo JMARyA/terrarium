@@ -273,7 +273,7 @@ fn zip_filename(tp: &str, ver: &str, os: &str, arch: &str) -> String {
     format!("terraform-provider-{tp}_{ver}_{os}_{arch}.zip")
 }
 
-fn hex_sha256(data: &[u8]) -> String {
+pub(crate) fn hex_sha256(data: &[u8]) -> String {
     Sha256::digest(data).iter().map(|b| format!("{b:02x}")).collect()
 }
 

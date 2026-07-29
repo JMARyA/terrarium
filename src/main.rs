@@ -28,6 +28,7 @@ mod statediff;
 mod ui;
 mod auth;
 mod observability;
+pub mod policy;
 
 #[derive(Clone)]
 pub struct AppState {
@@ -39,6 +40,8 @@ pub struct AppState {
     tofu: Option<TofuBinary>,
     pub registry: registry::RegistryStore,
     pub mirror_status: registry::MirrorStatusRef,
+    #[allow(dead_code)] // wired in Phase 3 (push lint) and Phase 4 (policy API)
+    pub policies: policy::PolicyStore,
 }
 
 impl axum::extract::FromRef<AppState> for authur::UserDB<authur::vfs::PhysicalFS> {
@@ -612,6 +615,7 @@ async fn serve(tofu_binary: Option<TofuBinary>) {
         tofu: tofu_binary,
         registry: registry::RegistryStore::new(data.join("registry")),
         mirror_status: std::sync::Arc::new(tokio::sync::RwLock::new(registry::MirrorStatus::default())),
+        policies: policy::PolicyStore::new(data.join("policies")),
     };
 
     let mut app = Router::new()
