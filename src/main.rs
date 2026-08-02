@@ -328,19 +328,19 @@ async fn main() {
         }
         cli::SubCommand::Plan(ref cmd) => {
             auto_nix_generate(&terranix_binary);
-            if cmd.detail || cmd.json {
-                run_tofu(tofu_binary, plan_args(cmd))
-            } else {
-                let mut args = plan_args(cmd);
+            let mut args = plan_args(cmd);
+            if !cmd.json {
                 args.push("-json".to_string());
-                args.push("-no-color".to_string());
-                plan_json::run_plan_pretty(
-                    &require_tofu(tofu_binary),
-                    args,
-                    cmd.policy.as_deref(),
-                )
-                .await
             }
+            args.push("-no-color".to_string());
+            plan_json::run_plan_pretty(
+                &require_tofu(tofu_binary),
+                args,
+                cmd.policy.as_deref(),
+                cmd.json,
+                cmd.detail,
+            )
+            .await
         }
         cli::SubCommand::Apply(ref cmd) => {
             auto_nix_generate(&terranix_binary);

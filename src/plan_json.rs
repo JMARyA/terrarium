@@ -1,5 +1,6 @@
 use std::io::{BufRead, IsTerminal, Write as _};
 use colored::Colorize as _;
+use rediff::FacetDiff;
 use serde_json::Value;
 use crate::tofu::TofuBinary;
 
@@ -15,6 +16,8 @@ pub async fn run_plan_pretty(
     tofu: &TofuBinary,
     mut args: Vec<String>,
     policy_flag: Option<&str>,
+    json_output: bool,
+    detail: bool,
 ) -> ! {
     let mode = parse_mode_flag(policy_flag);
 
@@ -36,7 +39,7 @@ pub async fn run_plan_pretty(
     }
 
     let refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
-    let (status, has_changes) = plan_stream_inner(tofu, &refs);
+    let (status, has_changes) = plan_stream_inner(tofu, &refs, json_output);
 
     if status.success() && has_changes {
         let plan_path = temp_out.clone().map(|p| p.to_string_lossy().to_string()).or_else(|| {
@@ -46,6 +49,9 @@ pub async fn run_plan_pretty(
                 .cloned()
         });
         if let Some(path) = plan_path {
+            if detail && !json_output {
+                print_plan_details(tofu, &path);
+            }
             // `enforcing: false` — a plan changes nothing, so violations are
             // reported here purely so they surface before apply time.
             crate::policy_client::gate(tofu, &path, mode, false).await;
@@ -123,7 +129,7 @@ pub async fn run_apply_pretty(tofu: &TofuBinary, cmd: &crate::cli::ApplyCommand)
 
     let plan_args = build_plan_args_from_apply(cmd, &plan_file_str);
     let plan_refs: Vec<&str> = plan_args.iter().map(|s| s.as_str()).collect();
-    let (plan_status, has_changes) = plan_stream_inner(tofu, &plan_refs);
+    let (plan_status, has_changes) = plan_stream_inner(tofu, &plan_refs, cmd.json);
 
     if !plan_status.success() {
         let _ = std::fs::remove_file(&plan_file);
@@ -137,6 +143,9 @@ pub async fn run_apply_pretty(tofu: &TofuBinary, cmd: &crate::cli::ApplyCommand)
 
     // Check before the confirmation prompt: being told a change is forbidden
     // after typing "yes" is a worse experience than being told before.
+    if cmd.detail && !cmd.json {
+        print_plan_details(tofu, &plan_file_str);
+    }
     if crate::policy_client::gate(tofu, &plan_file_str, mode, true).await {
         let _ = std::fs::remove_file(&plan_file);
         eprintln!("{}", "Apply blocked by policy.".bold().red());
@@ -161,9 +170,40 @@ pub async fn run_apply_pretty(tofu: &TofuBinary, cmd: &crate::cli::ApplyCommand)
     std::process::exit(apply_status.code().unwrap_or(1));
 }
 
+/// Render per-resource before/after diffs from OpenTofu's JSON plan. This is
+/// deliberately Terra presentation: OpenTofu is only queried through
+/// `show -json`, while rediff renders the structural change for people.
+fn print_plan_details(tofu: &TofuBinary, plan_file: &str) {
+    let Ok(plan) = tofu.run_json(&["show", "-json", plan_file]) else {
+        return;
+    };
+    let Some(changes) = plan["resource_changes"].as_array() else {
+        return;
+    };
+
+    for change in changes {
+        let actions = change["change"]["actions"].as_array();
+        if actions.is_some_and(|a| a.iter().all(|v| v.as_str() == Some("no-op"))) {
+            continue;
+        }
+        let address = change["address"].as_str().unwrap_or("unknown resource");
+        let before = facet_json::from_str::<facet_value::Value>(&change["change"]["before"].to_string());
+        let after = facet_json::from_str::<facet_value::Value>(&change["change"]["after"].to_string());
+        println!("\n  {}", address.bold());
+        match (before, after) {
+            (Ok(before), Ok(after)) => println!("{}", before.diff(&after)),
+            _ => println!("{}", "  (values are unknown until apply)".dimmed()),
+        }
+    }
+}
+
 // ── Plan streaming ────────────────────────────────────────────────────────────
 
-fn plan_stream_inner(tofu: &TofuBinary, args: &[&str]) -> (std::process::ExitStatus, bool) {
+fn plan_stream_inner(
+    tofu: &TofuBinary,
+    args: &[&str],
+    json_output: bool,
+) -> (std::process::ExitStatus, bool) {
     let mut child = tofu.spawn_piped(args).unwrap_or_else(|e| {
         eprintln!("{} {e}", "error:".bold().red());
         std::process::exit(1);
@@ -181,6 +221,11 @@ fn plan_stream_inner(tofu: &TofuBinary, args: &[&str]) -> (std::process::ExitSta
     for line in reader.lines() {
         let Ok(line) = line else { break };
         let Ok(v) = serde_json::from_str::<Value>(&line) else { continue };
+        // `--json` is Terra's JSONL view: every OpenTofu event is wrapped so
+        // consumers have an explicit, stable top-level owner.
+        if json_output {
+            println!(r#"{{"tofu":{}}}"#, v);
+        }
 
         match v["type"].as_str().unwrap_or("") {
             // ── Refresh progress ───────────────────────────────────────────
@@ -233,7 +278,7 @@ fn plan_stream_inner(tofu: &TofuBinary, args: &[&str]) -> (std::process::ExitSta
     clear_status(tty, &mut status_len);
     let status = child.wait().unwrap_or_else(|_| std::process::exit(1));
 
-    if !drifted.is_empty() {
+    if !json_output && !drifted.is_empty() {
         eprintln!("{}", "Note: Objects have changed outside of OpenTofu".yellow().bold());
         print_grouped(&drifted);
         eprintln!();
@@ -241,16 +286,20 @@ fn plan_stream_inner(tofu: &TofuBinary, args: &[&str]) -> (std::process::ExitSta
 
     let has_changes = match summary {
         Some((add, change, remove)) if add + change + remove == 0 => {
-            println!("{}", "No changes. Infrastructure is up-to-date.".green());
+            if !json_output {
+                println!("{}", "No changes. Infrastructure is up-to-date.".green());
+            }
             false
         }
         Some((add, change, remove)) => {
-            print_plan_summary(add, change, remove);
-            print_grouped(&resources);
+            if !json_output {
+                print_plan_summary(add, change, remove);
+                print_grouped(&resources);
+            }
             true
         }
         None => {
-            if !resources.is_empty() { print_grouped(&resources); }
+            if !json_output && !resources.is_empty() { print_grouped(&resources); }
             !resources.is_empty()
         }
     };
