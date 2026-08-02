@@ -36,6 +36,8 @@ pub struct LocalConfig {
 /// Everything the client needs to decide and explain a verdict.
 pub struct Prepared {
     pub sources: Vec<(String, String, Origin)>,
+    /// Identity associated with this client-side plan evaluation.
+    pub user: String,
     pub mode: Mode,
     /// How the mode was arrived at, for `--verbose`-free explanation.
     pub mode_reason: String,
@@ -183,7 +185,7 @@ fn drift_notices(local: &[(String, String)], bundle: &Bundle) -> Vec<Notice> {
 /// used purely as a `tofu` wrapper, which is the documented headline use and
 /// must not be made to fail.
 pub async fn prepare(
-    server: Option<(&TerrariumClient, &str)>,
+    server: Option<(&TerrariumClient, &str, &str)>,
     cwd: &Path,
     flag_mode: Option<Mode>,
 ) -> Result<Prepared, String> {
@@ -192,7 +194,7 @@ pub async fn prepare(
     let mut notices = Vec::new();
 
     let bundle = match server {
-        Some((client, workspace)) => match client.policy_bundle(workspace).await {
+        Some((client, workspace, _user)) => match client.policy_bundle(workspace).await {
             Ok(b) => Some(b),
             Err(BundleError::NotSupported) => {
                 notices.push(Notice::Warn(
@@ -237,6 +239,11 @@ pub async fn prepare(
 
     Ok(Prepared {
         sources,
+        // A configured Terrarium identity is authoritative. Local-only checks
+        // use the same environment fallback as `terra policy test`.
+        user: server
+            .map(|(_, _, user)| user.to_string())
+            .unwrap_or_else(policy_user),
         mode,
         mode_reason,
         server_count,
@@ -305,6 +312,7 @@ pub async fn gate(
         (
             TerrariumClient::new(c.url.clone(), c.username.clone(), c.password.clone()),
             workspace,
+            c.username.clone(),
         )
     });
 
@@ -314,7 +322,9 @@ pub async fn gate(
     }
 
     let prepared = match prepare(
-        client_and_workspace.as_ref().map(|(c, w)| (c, w.as_str())),
+        client_and_workspace
+            .as_ref()
+            .map(|(c, w, user)| (c, w.as_str(), user.as_str())),
         &dir,
         flag_mode,
     )
@@ -348,7 +358,7 @@ pub async fn gate(
 
     let workspace = client_and_workspace
         .as_ref()
-        .map(|(_, w)| w.as_str())
+        .map(|(_, w, _)| w.as_str())
         .unwrap_or("");
 
     let blocked = check_plan(&prepared, &plan_json, workspace);
@@ -373,6 +383,7 @@ pub fn check_plan(prepared: &Prepared, plan_json: &serde_json::Value, workspace:
 
     let input = serde_json::json!({
         "workspace": workspace,
+        "user": prepared.user,
         "plan": plan_json,
     });
     let input = match regorus::Value::from_json_str(&input.to_string()) {
@@ -461,6 +472,13 @@ fn report(prepared: &Prepared, outcome: &Outcome) {
             format!("({scope}, mode: {})", prepared.mode.as_str()).dimmed()
         );
     }
+}
+
+/// Identity for a local-only policy evaluation when no Terrarium config exists.
+pub fn policy_user() -> String {
+    std::env::var("TERRARIUM_USER")
+        .or_else(|_| std::env::var("USER"))
+        .unwrap_or_default()
 }
 
 /// Working directory, falling back to `.` so a missing cwd cannot abort a run.

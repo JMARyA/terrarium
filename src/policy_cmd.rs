@@ -79,7 +79,11 @@ fn run_test(args: &cli::PolicyTest) {
         (Site::Plan, "plan")
     };
 
-    let input = serde_json::json!({ "workspace": "", key: doc });
+    let input = serde_json::json!({
+        "workspace": "",
+        "user": crate::policy_client::policy_user(),
+        key: doc,
+    });
     let input = match regorus::Value::from_json_str(&input.to_string()) {
         Ok(v) => v,
         Err(e) => die(format!("could not build policy input: {e}")),
