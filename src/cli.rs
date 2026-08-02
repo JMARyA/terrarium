@@ -196,6 +196,9 @@ pub struct ApplyCommand {
     /// replace specific resource
     #[argh(option)]
     pub replace: Vec<String>,
+    /// target specific resource
+    #[argh(option)]
+    pub target: Vec<String>,
     /// destroy all resources
     #[argh(switch)]
     pub destroy: bool,
@@ -241,6 +244,9 @@ pub struct DestroyCommand {
     /// no color in output
     #[argh(switch)]
     pub no_color: bool,
+    /// policy check mode: enforce, warn or off
+    #[argh(option)]
+    pub policy: Option<String>,
 }
 
 // ── Tofu utility commands ──────────────────────────────────────────────────

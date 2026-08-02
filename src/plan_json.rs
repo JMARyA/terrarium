@@ -73,6 +73,32 @@ fn parse_mode_flag(raw: Option<&str>) -> Option<crate::policy::Mode> {
     }
 }
 
+/// Run `destroy` through the same saved-plan policy gate as `apply`.
+///
+/// OpenTofu implements destroy as an apply of a destroy plan; translating its
+/// arguments here keeps that invariant true for every `terra destroy` form.
+pub async fn run_destroy_pretty(tofu: &TofuBinary, cmd: &crate::cli::DestroyCommand) -> ! {
+    let apply = crate::cli::ApplyCommand {
+        auto_approve: cmd.auto_approve,
+        plan: None,
+        no_input: cmd.no_input,
+        no_lock: cmd.no_lock,
+        lock_timeout: cmd.lock_timeout.clone(),
+        parallelism: cmd.parallelism,
+        var: cmd.var.clone(),
+        var_file: cmd.var_file.clone(),
+        json: false,
+        no_color: cmd.no_color,
+        replace: Vec::new(),
+        target: cmd.target.clone(),
+        destroy: true,
+        refresh_only: false,
+        detail: false,
+        policy: cmd.policy.clone(),
+    };
+    run_apply_pretty(tofu, &apply).await
+}
+
 pub async fn run_apply_pretty(tofu: &TofuBinary, cmd: &crate::cli::ApplyCommand) -> ! {
     let mode = parse_mode_flag(cmd.policy.as_deref());
 
@@ -459,6 +485,7 @@ fn build_plan_args_from_apply(cmd: &crate::cli::ApplyCommand, out: &str) -> Vec<
     if cmd.destroy      { args.push("-destroy".to_string()); }
     if cmd.refresh_only { args.push("-refresh-only".to_string()); }
     for r in &cmd.replace { args.extend(["-replace".to_string(), r.clone()]); }
+    for t in &cmd.target { args.extend(["-target".to_string(), t.clone()]); }
     if cmd.no_input     { args.push("-input=false".to_string()); }
     if cmd.no_lock      { args.push("-lock=false".to_string()); }
     if let Some(ref lt) = cmd.lock_timeout { args.extend(["-lock-timeout".to_string(), lt.clone()]); }

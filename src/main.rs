@@ -105,38 +105,6 @@ fn plan_args(cmd: &cli::PlanCommand) -> Vec<String> {
     args
 }
 
-fn apply_args(cmd: &cli::ApplyCommand) -> Vec<String> {
-    let mut args = vec!["apply".to_string()];
-    if cmd.auto_approve { args.push("-auto-approve".to_string()); }
-    if let Some(ref p) = cmd.plan { args.push(p.clone()); }
-    if cmd.no_input { args.push("-input=false".to_string()); }
-    if cmd.no_lock { args.push("-lock=false".to_string()); }
-    if let Some(ref lt) = cmd.lock_timeout { args.extend(["-lock-timeout".to_string(), lt.clone()]); }
-    if let Some(p) = cmd.parallelism { args.push(format!("-parallelism={p}")); }
-    for v in &cmd.var { args.extend(["-var".to_string(), v.clone()]); }
-    for vf in &cmd.var_file { args.extend(["-var-file".to_string(), vf.clone()]); }
-    if cmd.json { args.push("-json".to_string()); }
-    if cmd.no_color { args.push("-no-color".to_string()); }
-    for r in &cmd.replace { args.extend(["-replace".to_string(), r.clone()]); }
-    if cmd.destroy { args.push("-destroy".to_string()); }
-    if cmd.refresh_only { args.push("-refresh-only".to_string()); }
-    args
-}
-
-fn destroy_args(cmd: &cli::DestroyCommand) -> Vec<String> {
-    let mut args = vec!["destroy".to_string()];
-    if cmd.auto_approve { args.push("-auto-approve".to_string()); }
-    for t in &cmd.target { args.extend(["-target".to_string(), t.clone()]); }
-    if cmd.no_input { args.push("-input=false".to_string()); }
-    if cmd.no_lock { args.push("-lock=false".to_string()); }
-    if let Some(ref lt) = cmd.lock_timeout { args.extend(["-lock-timeout".to_string(), lt.clone()]); }
-    if let Some(p) = cmd.parallelism { args.push(format!("-parallelism={p}")); }
-    for v in &cmd.var { args.extend(["-var".to_string(), v.clone()]); }
-    for vf in &cmd.var_file { args.extend(["-var-file".to_string(), vf.clone()]); }
-    if cmd.no_color { args.push("-no-color".to_string()); }
-    args
-}
-
 fn console_args(_cmd: &cli::ConsoleCommand) -> Vec<String> {
     vec!["console".to_string()]
 }
@@ -376,15 +344,15 @@ async fn main() {
         }
         cli::SubCommand::Apply(ref cmd) => {
             auto_nix_generate(&terranix_binary);
-            if cmd.detail || cmd.json {
-                run_tofu(tofu_binary, apply_args(cmd))
-            } else {
-                plan_json::run_apply_pretty(&require_tofu(tofu_binary), cmd).await
-            }
+            // All apply forms go through the saved-plan gate. In particular,
+            // `--json` and `--detail` must not become policy bypasses.
+            plan_json::run_apply_pretty(&require_tofu(tofu_binary), cmd).await
         }
         cli::SubCommand::Destroy(ref cmd) => {
             auto_nix_generate(&terranix_binary);
-            run_tofu(tofu_binary, destroy_args(cmd))
+            // Destroy is an apply of a destructive plan, so it receives the
+            // same plan-policy gate rather than delegating straight to tofu.
+            plan_json::run_destroy_pretty(&require_tofu(tofu_binary), cmd).await
         }
 
         // ── Tofu utility commands ──
