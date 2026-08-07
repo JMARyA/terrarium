@@ -28,6 +28,26 @@
     in
     {
       nixosModules.default = nixosModule;
+
+      # Read by moira as `.#moiraFlake` — system-agnostic, so it belongs here
+      # rather than inside eachDefaultSystem. Both `.moira/container.yaml` and
+      # `.moira/container-release.yaml` declare
+      # `needs_flake: packages.containerImage`; declaring the spec is what turns
+      # that into an evaluated, scheduled derivation graph instead of an
+      # on-demand `nix build` inside the push step.
+      #
+      # `checks.nixos-integration` is a NixOS VM test and needs KVM. moira maps
+      # `requiredSystemFeatures` onto the same label vocabulary as agent
+      # placement, so if no agent advertises it the derivation is unclaimable
+      # and sits in the queue rather than failing. It blocks nothing — nothing
+      # depends on it — but if it shows as stranded on the derivations page,
+      # `exclude = [ "checks.nixos-integration" ]` is the fix.
+      moiraFlake = {
+        include = [
+          "packages.*"
+          "checks.*"
+        ];
+      };
     }
     // flake-utils.lib.eachDefaultSystem (
       system:
