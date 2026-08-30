@@ -81,7 +81,7 @@
           buildInputs = [
             pkgs.openssl
           ]
-          ++ pkgs.lib.optionals pkgs.stdenv.isDarwin [
+          ++ pkgs.lib.optionals pkgs.stdenv.hostPlatform.isDarwin [
             pkgs.libiconv
           ];
         };
@@ -128,7 +128,7 @@
       {
         checks = {
           inherit terrarium;
-        } // pkgs.lib.optionalAttrs pkgs.stdenv.isLinux {
+        } // pkgs.lib.optionalAttrs pkgs.stdenv.hostPlatform.isLinux {
           nixos-integration = nixosTest;
         };
 
