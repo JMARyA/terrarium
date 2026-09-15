@@ -546,13 +546,26 @@ fn auto_nix_generate(terranix_binary: &Option<TerranixBinary>) {
 
     let out_path = std::path::PathBuf::from("config.tf.json");
 
+    let spinner = indicatif::ProgressBar::new_spinner();
+    spinner.set_style(
+        indicatif::ProgressStyle::with_template("{spinner:.cyan} {msg}")
+            .expect("valid spinner template")
+            .tick_strings(&["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]),
+    );
+    spinner.set_message(format!("Generating config.tf.json from {}…", nix_path.display()));
+    spinner.enable_steady_tick(std::time::Duration::from_millis(80));
+
+    // stdout is the generated JSON, so it cannot be displayed as a log stream.
+    // stderr is retained and shown if generation fails.
     let output = std::process::Command::new(terranix.path())
         .arg(nix_path.to_str().unwrap())
-        .output()
-        .unwrap_or_else(|e| {
-            eprintln!("{} Failed to execute terranix: {e}", "error:".bold().red());
-            std::process::exit(1);
-        });
+        .output();
+    spinner.finish_and_clear();
+
+    let output = output.unwrap_or_else(|e| {
+        eprintln!("{} Failed to execute terranix: {e}", "error:".bold().red());
+        std::process::exit(1);
+    });
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
