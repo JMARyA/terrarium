@@ -98,6 +98,17 @@ in
       '';
     };
 
+    lockTtl = lib.mkOption {
+      type = lib.types.nullOr lib.types.ints.unsigned;
+      default = null;
+      example = 14400;
+      description = ''
+        Seconds after which a state lock may be taken over by the next lock
+        request. `0` disables expiry; `null` (the default) uses the server
+        default of 7200 (2 hours).
+      '';
+    };
+
     upstreamRegistries = lib.mkOption {
       type = lib.types.listOf lib.types.str;
       default = [ "registry.terraform.io" "registry.opentofu.org" ];
@@ -124,6 +135,8 @@ in
         TERRARIUM_MIRROR_INTERVAL = toString cfg.mirrorInterval;
       } // lib.optionalAttrs (cfg.maxBodyBytes != null) {
         TERRARIUM_MAX_BODY_BYTES = toString cfg.maxBodyBytes;
+      } // lib.optionalAttrs (cfg.lockTtl != null) {
+        TERRARIUM_LOCK_TTL = toString cfg.lockTtl;
       };
       serviceConfig = {
         ExecStart = "${cfg.package}/bin/terra serve";

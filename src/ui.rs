@@ -413,9 +413,10 @@ pub async fn dashboard(maybe: MaybeUser, State(app): State<AppState>) -> Respons
         entries.sort_by(|a, b| a.0.cmp(b.0));
         for (name, info) in entries {
             body.push_str(&format!(
-                r#"<tr><td><a href="/w/{}">{}</a></td><td class="yellow">{}</td><td class="cyan">{}</td><td class="dim">{}</td></tr>"#,
+                r#"<tr><td><a href="/w/{}">{}</a>{}</td><td class="yellow">{}</td><td class="cyan">{}</td><td class="dim">{}</td></tr>"#,
                 esc(name),
                 esc(name),
+                if app.locks.is_expired(name) { r#" <span class="badge">expired</span>"# } else { "" },
                 esc(info.Who.as_deref().unwrap_or("unknown")),
                 esc(&info.ID),
                 esc(info.Created.as_deref().unwrap_or("")),
@@ -564,7 +565,12 @@ pub async fn workspace(maybe: MaybeUser, State(app): State<AppState>, Path(name)
     body.push_str(r#"<h2>Lock status</h2><div class="panel">"#);
     match &lock {
         Some(info) => body.push_str(&format!(
-            r#"<span class="badge lock">locked</span> by <span class="yellow">{}</span> <span class="dim">— lock ID</span> <span class="cyan">{}</span><br><span class="dim">since {}</span>"#,
+            r#"<span class="badge lock">locked</span>{} by <span class="yellow">{}</span> <span class="dim">— lock ID</span> <span class="cyan">{}</span><br><span class="dim">since {}</span>"#,
+            if app.locks.is_expired(&name) {
+                r#" <span class="badge">expired</span> <span class="dim">— the next lock request takes it over</span>"#
+            } else {
+                ""
+            },
             esc(info.Who.as_deref().unwrap_or("unknown")),
             esc(&info.ID),
             esc(info.Created.as_deref().unwrap_or("")),

@@ -245,6 +245,8 @@ Delta histograms record the absolute delta value and use `direction` to distingu
 | `terrarium_lock_conflicts_total` | counter | `workspace` | Lock acquire conflicts. |
 | `terrarium_lock_age_seconds` | histogram | `workspace` | Lock age observed when a lock is released. |
 | `terrarium_lock_max_age_seconds` | gauge | none | Age of the oldest active lock, aggregate only. |
+| `terrarium_locks_expired` | gauge | none | Held locks older than `TERRARIUM_LOCK_TTL`, awaiting takeover. |
+| `terrarium_lock_expirations_total` | counter | `workspace` | Expired locks taken over by a new lock request. |
 
 Allowed `operation` values:
 

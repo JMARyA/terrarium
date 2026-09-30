@@ -279,6 +279,10 @@ terra remote state unarchive infra/prod
 terra remote lock list
 ```
 
+Locks expire so a crashed CI job can't wedge a workspace. A lock older than `TERRARIUM_LOCK_TTL` seconds (default `7200`, 2 hours; `0` disables expiry) is **taken over by the next lock request** — nothing is released in the background, so a long apply nobody is waiting on keeps its lock. Once taken over, the old holder can no longer push or unlock with its lock ID, and a `lock.expire` webhook fires. Age is measured by the server's clock, not the client's.
+
+When a lock is refused, the response body is the current holder's lock info, so `tofu`/`terraform` show who holds it.
+
 ### Self-Service User
 
 ```shell
@@ -338,7 +342,7 @@ All endpoints require authentication — either HTTP Basic Auth or an `Authoriza
 | `DELETE` | `/archive/{name}`       | Unarchive a state (re-enable writes)                       |
 | `GET`    | `/lock`                 | List all active locks                                      |
 | `POST`   | `/lock/{name}`          | Acquire lock                                               |
-| `DELETE` | `/lock/{name}`          | Release lock                                               |
+| `DELETE` | `/lock/{name}`          | Release lock (body with `ID`: only that lock; empty: force) |
 | `PUT`    | `/user/password`        | Change own password (`{ current_password, new_password }`) |
 | `GET`    | `/webhooks/{workspace}` | List webhooks for workspace                                |
 | `POST`   | `/webhooks/{workspace}` | Register webhook (`{ url, events[] }`)                     |

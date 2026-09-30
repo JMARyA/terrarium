@@ -188,6 +188,7 @@ async fn collect(app: &AppState, data_dir: &Path) {
     let locks = app.locks.list();
     gauge!("terrarium_locks_active").set(locks.len() as f64);
     gauge!("terrarium_lock_max_age_seconds").set(max_lock_age(&locks) as f64);
+    gauge!("terrarium_locks_expired").set(app.locks.expired_count() as f64);
 
     gauge!("terrarium_webhooks_registered").set(app.webhooks.hooks.read().await.len() as f64);
 

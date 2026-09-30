@@ -608,13 +608,14 @@ fn die(msg: String) -> ! {
 
 async fn serve(tofu_binary: Option<TofuBinary>) {
     let data = data_dir();
+    let lock_ttl = lock::lock_ttl_from_env();
     let metrics_enabled = observability::enabled();
     if metrics_enabled {
         observability::init();
     }
     let state = AppState {
         state: StateContainer::new(data.join("state"), data.join("versions")),
-        locks: LockContainer::new(data.join("locks")),
+        locks: LockContainer::new(data.join("locks"), lock_ttl),
         users: authur::UserDB::new(data.join("users").to_str().unwrap()).await,
         webhooks: WebhookStore::new(data.join("webhooks.json")),
         tofu: tofu_binary,
@@ -731,6 +732,10 @@ async fn serve(tofu_binary: Option<TofuBinary>) {
         .await
         .expect("Failed to bind to port 8080");
 
+    match lock_ttl {
+        Some(ttl) => tracing::info!("⏰ Locks expire after {}s (TERRARIUM_LOCK_TTL)", ttl.as_secs()),
+        None => tracing::info!("⏰ Lock expiry disabled (TERRARIUM_LOCK_TTL=0)"),
+    }
     tracing::info!("🌱 Starting terra server at :8080");
     axum::serve(listener, app).await.unwrap();
 }
