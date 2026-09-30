@@ -1,0 +1,69 @@
+schema: spec-driven
+
+# Project context — shown to AI when creating artifacts.
+context: |
+  Terrarium is a Terraform/OpenTofu HTTP state backend. Motto: small, boring,
+  correct. One Rust binary, `terra`, is both the server (`terra serve`) and a
+  CLI that wraps `tofu` (pass-through subcommands), generates config from Nix
+  via Terranix, and talks to the server (`terra remote …`).
+
+  Product boundary — do not cross it:
+  - The server never plans or applies and holds no cloud credentials. Applies
+    run in CI, where configs are generated with Terranix and secrets are
+    sourced per job. The server observes, records, visualizes and alerts.
+  - The web UI is read-only: a viewer, not a control plane. It mutates only
+    the viewer's own session and API tokens.
+  - Information about runs reaches the server by being reported by the `terra`
+    CLI (or CI), never by the server reaching out to execute anything.
+
+  Tech stack: Rust edition 2024, axum 0.8, tokio, reqwest, serde; regorus for
+  Rego policies; `metrics` + Prometheus exporter. Web UI is server-rendered
+  HTML built as strings in src/ui.rs — every interpolated value goes through
+  `esc()`, no external assets (graphs are inline SVG).
+
+  Storage: plain files under TERRARIUM_DATA (state/, versions/, locks/,
+  users/, webhooks.json, …). No database. Writes go through
+  `state::atomic_write` (temp file + rename); files holding secrets use
+  `state::atomic_write_private` (0600). Existing data directories must keep
+  working after an upgrade.
+
+  Configuration is TERRARIUM_* environment variables. Each new one is
+  documented in README.md (or docs/*.md), exposed as a NixOS module option in
+  nixos/module.nix, and listed commented-out in docker-compose.yml.
+
+  Auth: HTTP Basic (Terraform backend, CLI), Bearer API tokens, browser
+  sessions. There is no RBAC yet — every authenticated user can do everything.
+
+  Observability: metrics may carry a `workspace` label but never usernames,
+  resource addresses, output names/values, token IDs or webhook URLs. New
+  metrics are documented in docs/observability.md.
+
+  Build and test inside `nix develop` (the host linker lacks libiconv):
+  `nix develop -c cargo test`. Unit tests live next to the code; the
+  end-to-end NixOS VM test is nixos/test.nix.
+
+  Commits follow Conventional Commits (cocogitto, cog.toml), one logical
+  change per commit.
+
+# Per-artifact rules
+rules:
+  proposal:
+    - Include a "Non-goals" section, and state explicitly how the change stays inside the product boundary (no server-side plan/apply, read-only UI).
+  design:
+    - Describe the on-disk layout of any new data and how existing data directories are handled on upgrade.
+    - Call out anything a user or CI job sends that ends up in logs, metrics, webhooks or the UI, and whether it can contain secrets.
+  tasks:
+    - Include tasks for README/docs, the NixOS module option and docker-compose.yml for every new TERRARIUM_* variable, and docs/observability.md for every new metric.
+    - Include tests, and a final task to run `nix develop -c cargo test`.
+
+# Per-operation guidance (optional)
+# Add advisory guidance for how apply and archive work should be conducted.
+# This is separate from artifact rules above.
+# Example:
+#   operations:
+#     apply:
+#       guidance:
+#         - Keep test summaries concise
+#     archive:
+#       guidance:
+#         - Summarize the archive outcome before finishing
