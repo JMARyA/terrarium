@@ -3307,6 +3307,8 @@ dependencies = [
  "facet",
  "facet-json",
  "facet-value",
+ "getrandom 0.4.3",
+ "hmac",
  "indicatif",
  "metrics",
  "metrics-exporter-prometheus",

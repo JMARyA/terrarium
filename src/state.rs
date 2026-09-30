@@ -141,6 +141,18 @@ impl StateContainer {
 /// failing write leaves any existing file untouched. The temp file is cleaned
 /// up on failure.
 pub(crate) fn atomic_write(path: &FsPath, data: &[u8]) -> std::io::Result<()> {
+    atomic_write_mode(path, data, None)
+}
+
+/// [`atomic_write`] for files holding secrets: the file is created
+/// owner-read/write only (`0600`) before any data is written, so there is no
+/// window in which it is readable with the default umask.
+pub(crate) fn atomic_write_private(path: &FsPath, data: &[u8]) -> std::io::Result<()> {
+    atomic_write_mode(path, data, Some(0o600))
+}
+
+fn atomic_write_mode(path: &FsPath, data: &[u8], mode: Option<u32>) -> std::io::Result<()> {
+    use std::io::Write as _;
     use std::sync::atomic::{AtomicU64, Ordering};
     static TMP_SEQ: AtomicU64 = AtomicU64::new(0);
 
@@ -154,14 +166,29 @@ pub(crate) fn atomic_write(path: &FsPath, data: &[u8]) -> std::io::Result<()> {
     let seq = TMP_SEQ.fetch_add(1, Ordering::Relaxed);
     let tmp = path.with_file_name(format!(".{file_name}.{}.{seq}.tmp", std::process::id()));
 
-    let result = std::fs::write(&tmp, data).and_then(|_| std::fs::rename(&tmp, path));
+    // A crashed writer with a recycled pid can leave this exact temp name
+    // behind; clear it so `create_new` below applies `mode` to a fresh file.
+    let _ = std::fs::remove_file(&tmp);
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    if let Some(mode) = mode {
+        use std::os::unix::fs::OpenOptionsExt as _;
+        options.mode(mode);
+    }
+    #[cfg(not(unix))]
+    let _ = mode;
+    let result = options
+        .open(&tmp)
+        .and_then(|mut f| f.write_all(data))
+        .and_then(|_| std::fs::rename(&tmp, path));
     if result.is_err() {
         let _ = std::fs::remove_file(&tmp);
     }
     result
 }
 
-fn validate_name(name: &str) -> Result<(), StatusCode> {
+pub(crate) fn validate_name(name: &str) -> Result<(), StatusCode> {
     if name.is_empty() || name.starts_with('/') || name.ends_with('/') {
         return Err(StatusCode::BAD_REQUEST);
     }

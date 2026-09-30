@@ -259,7 +259,7 @@ plan | apply | destroy | refresh | unknown | other
 | Metric | Type | Labels | Description |
 | --- | --- | --- | --- |
 | `terrarium_webhooks_registered` | gauge | none | Registered webhooks. |
-| `terrarium_webhook_deliveries_total` | counter | `workspace`, `event`, `result` | Webhook delivery attempts. |
+| `terrarium_webhook_deliveries_total` | counter | `workspace`, `event`, `result` | Webhook delivery attempts (`ok`, `http_error`, `error`, or `blocked` by `TERRARIUM_WEBHOOK_NETWORKS`). |
 | `terrarium_webhook_delivery_duration_seconds` | histogram | `workspace`, `event`, `result` | Webhook delivery latency. |
 | `terrarium_webhook_retries_total` | counter | `workspace`, `event` | Webhook retry attempts. |
 

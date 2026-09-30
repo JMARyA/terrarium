@@ -1061,6 +1061,7 @@ pub enum RemoteWebhookSubCommand {
     Add(RemoteWebhookAdd),
     List(RemoteWebhookList),
     Remove(RemoteWebhookRemove),
+    RotateSecret(RemoteWebhookRotateSecret),
 }
 
 #[derive(FromArgs)]
@@ -1074,7 +1075,7 @@ pub struct RemoteWebhookAdd {
     #[argh(positional)]
     pub url: String,
     /// comma-separated events to subscribe to (default: all)
-    /// e.g. state.push,lock.acquire
+    /// e.g. state.push,lock.acquire,lock.expire
     #[argh(option)]
     pub events: Option<String>,
 }
@@ -1092,6 +1093,15 @@ pub struct RemoteWebhookList {
 /// Remove a webhook by ID
 #[argh(subcommand, name = "remove")]
 pub struct RemoteWebhookRemove {
+    /// webhook ID (from webhook list)
+    #[argh(positional)]
+    pub id: String,
+}
+
+#[derive(FromArgs)]
+/// Replace a webhook's signing secret and print the new one
+#[argh(subcommand, name = "rotate-secret")]
+pub struct RemoteWebhookRotateSecret {
     /// webhook ID (from webhook list)
     #[argh(positional)]
     pub id: String,

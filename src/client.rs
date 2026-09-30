@@ -4,7 +4,7 @@ use reqwest::Client;
 
 use crate::lock::LockInfo;
 use crate::policy::{Bundle, ConfigEntry, Policy};
-use crate::webhook::Webhook;
+use crate::webhook::WebhookInfo;
 
 /// Why fetching a policy bundle failed.
 ///
@@ -201,7 +201,7 @@ impl TerrariumClient {
         workspace: &str,
         url: &str,
         events: Vec<String>,
-    ) -> Result<Webhook, String> {
+    ) -> Result<WebhookInfo, String> {
         let body = serde_json::json!({ "url": url, "events": events });
         let resp = self
             .client
@@ -213,13 +213,31 @@ impl TerrariumClient {
             .map_err(|e| e.to_string())?;
 
         if resp.status().is_success() {
-            resp.json::<Webhook>().await.map_err(|e| e.to_string())
+            resp.json::<WebhookInfo>().await.map_err(|e| e.to_string())
         } else {
-            Err(format!("Server returned {}", resp.status()))
+            let status = resp.status();
+            let reason = resp.text().await.unwrap_or_default();
+            Err(format!("Server returned {status}: {reason}"))
         }
     }
 
-    pub async fn list_webhooks(&self, workspace: &str) -> Result<Vec<Webhook>, String> {
+    pub async fn rotate_webhook_secret(&self, id: &str) -> Result<WebhookInfo, String> {
+        let resp = self
+            .client
+            .post(format!("{}/webhooks/id/{id}/rotate-secret", self.base_url))
+            .basic_auth(&self.username, Some(&self.password))
+            .send()
+            .await
+            .map_err(|e| e.to_string())?;
+
+        match resp.status() {
+            s if s.is_success() => resp.json::<WebhookInfo>().await.map_err(|e| e.to_string()),
+            reqwest::StatusCode::NOT_FOUND => Err(format!("Webhook '{id}' not found")),
+            s => Err(format!("Server returned {s}")),
+        }
+    }
+
+    pub async fn list_webhooks(&self, workspace: &str) -> Result<Vec<WebhookInfo>, String> {
         let resp = self
             .client
             .get(format!("{}/webhooks/{workspace}", self.base_url))
@@ -229,7 +247,7 @@ impl TerrariumClient {
             .map_err(|e| e.to_string())?;
 
         if resp.status().is_success() {
-            resp.json::<Vec<Webhook>>().await.map_err(|e| e.to_string())
+            resp.json::<Vec<WebhookInfo>>().await.map_err(|e| e.to_string())
         } else {
             Err(format!("Server returned {}", resp.status()))
         }

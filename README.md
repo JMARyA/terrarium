@@ -73,7 +73,7 @@ All data is stored under `TERRARIUM_DATA` (`/app` in the container, `./data` on 
 | `versions/`     | Full version history |
 | `locks/`        | Persisted lock files |
 | `users/`        | User database        |
-| `webhooks.json` | Registered webhooks  |
+| `webhooks.json` | Registered webhooks and their signing secrets (`0600`) |
 
 Request bodies (state pushes, provider uploads) are capped at 256 MiB by default. Override with `TERRARIUM_MAX_BODY_BYTES` (in bytes).
 
@@ -292,24 +292,27 @@ terra remote user passwd [new-password]
 
 ### Webhooks
 
-Webhooks are scoped per workspace and fire on state and lock events.
+Webhooks are scoped per workspace and fire on state and lock events. Every delivery is HMAC-signed; the signing secret is printed once, when the hook is created.
 
 ```shell
-# Register a webhook (all events)
+# Register a webhook (all events) — prints the ID and signing secret
 terra remote webhook add infra/prod https://hooks.example.com/tf
 
 # Register for specific events only
 terra remote webhook add infra/prod https://hooks.example.com/tf \
-  --events state.push,lock.acquire
+  --events state.push,lock.expire
 
-# List webhooks for a workspace
+# List webhooks for a workspace (secrets are never listed)
 terra remote webhook list infra/prod
+
+# Replace a webhook's signing secret
+terra remote webhook rotate-secret <id>
 
 # Remove a webhook by ID
 terra remote webhook remove <id>
 ```
 
-**Supported events:** `state.push`, `state.delete`, `state.archive`, `lock.acquire`, `lock.release`
+**Supported events:** `state.push`, `state.delete`, `state.archive`, `state.unarchive`, `lock.acquire`, `lock.release`, `lock.expire`
 
 **Payload:**
 
@@ -323,7 +326,9 @@ terra remote webhook remove <id>
 }
 ```
 
-Delivery is retried up to 4 times with exponential backoff (1 s → 2 s → 4 s) before giving up.
+Each request carries `X-Terrarium-Signature: sha256=<hex>`, an HMAC-SHA256 of `"{X-Terrarium-Timestamp}.{body}"`. Transient failures (network errors, `5xx`, `408`, `429`) are retried up to 4 attempts with 1 s → 2 s → 4 s backoff. By default webhooks can't target loopback, link-local or cloud-metadata addresses (`TERRARIUM_WEBHOOK_NETWORKS`).
+
+See `docs/webhooks.md` for signature verification and network restrictions.
 
 ---
 
@@ -347,6 +352,7 @@ All endpoints require authentication — either HTTP Basic Auth or an `Authoriza
 | `GET`    | `/webhooks/{workspace}` | List webhooks for workspace                                |
 | `POST`   | `/webhooks/{workspace}` | Register webhook (`{ url, events[] }`)                     |
 | `DELETE` | `/webhooks/id/{id}`     | Remove webhook by ID                                       |
+| `POST`   | `/webhooks/id/{id}/rotate-secret` | Replace a webhook's signing secret               |
 | `GET`    | `/policy`               | List policies                                              |
 | `GET`    | `/policy/bundle`        | Policies with source + effective config (`?workspace=`)    |
 | `PUT`    | `/policy/{name}`        | Create/replace a policy (`{ source, workspace, enabled }`) |

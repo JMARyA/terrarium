@@ -109,6 +109,16 @@ in
       '';
     };
 
+    webhookNetworks = lib.mkOption {
+      type = lib.types.enum [ "public" "private" "any" ];
+      default = "private";
+      description = ''
+        Destinations webhooks may reach. `private` allows public and private
+        networks but blocks loopback, link-local and cloud metadata addresses;
+        `public` allows public addresses only; `any` disables the check.
+      '';
+    };
+
     upstreamRegistries = lib.mkOption {
       type = lib.types.listOf lib.types.str;
       default = [ "registry.terraform.io" "registry.opentofu.org" ];
@@ -130,6 +140,7 @@ in
       environment = {
         TERRARIUM_DATA = cfg.dataDir;
         TERRARIUM_UPSTREAM_REGISTRIES = lib.concatStringsSep "," cfg.upstreamRegistries;
+        TERRARIUM_WEBHOOK_NETWORKS = cfg.webhookNetworks;
         RUST_LOG = "info";
       } // lib.optionalAttrs (cfg.mirrorInterval != null) {
         TERRARIUM_MIRROR_INTERVAL = toString cfg.mirrorInterval;

@@ -606,6 +606,14 @@ fn die(msg: String) -> ! {
     std::process::exit(1);
 }
 
+/// Print a webhook's signing secret, which the server only returns once.
+fn print_webhook_secret(hook: &webhook::WebhookInfo) {
+    if let Some(secret) = &hook.secret {
+        println!("{} {}", "Signing secret:".bold(), secret.yellow());
+        println!("{}", "Store it now — it won't be shown again. Verify deliveries with the X-Terrarium-Signature header (docs/webhooks.md).".dimmed());
+    }
+}
+
 async fn serve(tofu_binary: Option<TofuBinary>) {
     let data = data_dir();
     let lock_ttl = lock::lock_ttl_from_env();
@@ -617,7 +625,7 @@ async fn serve(tofu_binary: Option<TofuBinary>) {
         state: StateContainer::new(data.join("state"), data.join("versions")),
         locks: LockContainer::new(data.join("locks"), lock_ttl),
         users: authur::UserDB::new(data.join("users").to_str().unwrap()).await,
-        webhooks: WebhookStore::new(data.join("webhooks.json")),
+        webhooks: WebhookStore::new(data.join("webhooks.json"), webhook::NetworkPolicy::from_env()),
         tofu: tofu_binary,
         registry: registry::RegistryStore::new(data.join("registry")),
         mirror_status: std::sync::Arc::new(tokio::sync::RwLock::new(registry::MirrorStatus::default())),
@@ -644,6 +652,7 @@ async fn serve(tofu_binary: Option<TofuBinary>) {
             get(webhook::list_webhooks).post(webhook::add_webhook),
         )
         .route("/webhooks/id/{id}", axum::routing::delete(webhook::remove_webhook))
+        .route("/webhooks/id/{id}/rotate-secret", post(webhook::rotate_secret))
         // ── Policy engine ──
         // API lives under `/policy`; `/policies` is the human-facing page, the
         // same split the registry uses.
@@ -940,7 +949,10 @@ async fn handle_remote_command(remote: cli::RemoteCommand) {
             cli::RemoteWebhookSubCommand::Add(args) => {
                 let events = args.events.unwrap_or_default().split(',').filter(|s| !s.is_empty()).map(str::to_string).collect();
                 match client.add_webhook(&args.workspace, &args.url, events).await {
-                    Ok(hook) => println!("{} {}", "Webhook registered — ID:".green(), hook.id.cyan()),
+                    Ok(hook) => {
+                        println!("{} {}", "Webhook registered — ID:".green(), hook.id.cyan());
+                        print_webhook_secret(&hook);
+                    }
                     Err(e) => die(e),
                 }
             }
@@ -964,6 +976,15 @@ async fn handle_remote_command(remote: cli::RemoteCommand) {
             cli::RemoteWebhookSubCommand::Remove(args) => {
                 match client.remove_webhook(&args.id).await {
                     Ok(()) => println!("{} {}", "Webhook removed:".green(), args.id.cyan()),
+                    Err(e) => die(e),
+                }
+            }
+            cli::RemoteWebhookSubCommand::RotateSecret(args) => {
+                match client.rotate_webhook_secret(&args.id).await {
+                    Ok(hook) => {
+                        println!("{} {}", "Secret rotated for webhook".green(), hook.id.cyan());
+                        print_webhook_secret(&hook);
+                    }
                     Err(e) => die(e),
                 }
             }

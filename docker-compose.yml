@@ -19,6 +19,8 @@ services:
       # - "TERRARIUM_UPSTREAM_REGISTRIES=registry.terraform.io,registry.opentofu.org"
       # Seconds before a stale lock can be taken over (default 7200; 0 = never).
       # - "TERRARIUM_LOCK_TTL=7200"
+      # Where webhooks may deliver: public | private (default) | any
+      # - "TERRARIUM_WEBHOOK_NETWORKS=private"
       # Optional Prometheus metrics endpoint. Requires a dedicated bearer token.
       # - "TERRARIUM_METRICS=1"
       # - "TERRARIUM_METRICS_TOKEN_FILE=/run/secrets/terrarium_metrics_token"
