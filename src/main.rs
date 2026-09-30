@@ -12,6 +12,18 @@ use crate::{lock::LockContainer, state::StateContainer, webhook::WebhookStore};
 use crate::tofu::TofuBinary;
 use crate::terranix::TerranixBinary;
 
+/// Default ceiling on request bodies (state pushes, provider uploads), in bytes.
+/// Axum's own default is 2 MiB, which real-world states outgrow quickly.
+const DEFAULT_MAX_BODY_BYTES: usize = 256 * 1024 * 1024;
+
+fn max_body_bytes() -> usize {
+    std::env::var("TERRARIUM_MAX_BODY_BYTES")
+        .ok()
+        .and_then(|v| v.parse::<usize>().ok())
+        .filter(|&n| n > 0)
+        .unwrap_or(DEFAULT_MAX_BODY_BYTES)
+}
+
 mod cli;
 mod client;
 mod config;
@@ -672,6 +684,7 @@ async fn serve(tofu_binary: Option<TofuBinary>) {
         .route("/registry/{namespace}/{type}/{version}/docs/{*path}", get(ui::provider_doc_page))
         .route("/help", get(ui::help_page))
         .with_state(state.clone())
+        .layer(axum::extract::DefaultBodyLimit::max(max_body_bytes()))
         .layer(middleware::from_fn(observability::http_middleware));
 
     if metrics_enabled {

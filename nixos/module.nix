@@ -89,6 +89,15 @@ in
       '';
     };
 
+    maxBodyBytes = lib.mkOption {
+      type = lib.types.nullOr lib.types.ints.positive;
+      default = null;
+      description = ''
+        Maximum request body size in bytes (state pushes, provider uploads).
+        `null` (the default) uses the server default of 256 MiB.
+      '';
+    };
+
     upstreamRegistries = lib.mkOption {
       type = lib.types.listOf lib.types.str;
       default = [ "registry.terraform.io" "registry.opentofu.org" ];
@@ -113,6 +122,8 @@ in
         RUST_LOG = "info";
       } // lib.optionalAttrs (cfg.mirrorInterval != null) {
         TERRARIUM_MIRROR_INTERVAL = toString cfg.mirrorInterval;
+      } // lib.optionalAttrs (cfg.maxBodyBytes != null) {
+        TERRARIUM_MAX_BODY_BYTES = toString cfg.maxBodyBytes;
       };
       serviceConfig = {
         ExecStart = "${cfg.package}/bin/terra serve";

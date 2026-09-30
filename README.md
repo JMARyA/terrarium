@@ -75,6 +75,8 @@ All data is stored under `TERRARIUM_DATA` (`/app` in the container, `./data` on 
 | `users/`        | User database        |
 | `webhooks.json` | Registered webhooks  |
 
+Request bodies (state pushes, provider uploads) are capped at 256 MiB by default. Override with `TERRARIUM_MAX_BODY_BYTES` (in bytes).
+
 ### Observability
 
 Terrarium can expose a Prometheus endpoint for safe aggregate platform metrics:
