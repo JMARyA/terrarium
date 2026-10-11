@@ -32,6 +32,23 @@ pub struct InstanceChange {
     pub diff: String,
 }
 
+/// A change to a root-module output.
+pub struct OutputChange {
+    pub name: String,
+    pub kind: OutputChangeKind,
+    /// Sensitive in either version. Values of sensitive outputs are never
+    /// part of a diff, only the fact that they changed.
+    pub sensitive: bool,
+}
+
+pub enum OutputChangeKind {
+    Added,
+    Removed,
+    /// `diff` is the formatted value diff; `None` for sensitive outputs, or
+    /// when only the sensitivity flag changed.
+    Modified { diff: Option<String> },
+}
+
 /// The result of diffing two state blobs.
 pub enum StateDiff {
     /// Both blobs parsed as terraform state — a structural, resource-aware diff.
@@ -41,6 +58,7 @@ pub enum StateDiff {
         /// `Some((from, to))` when serial or terraform version changed.
         serial: Option<(u64, u64)>,
         changes: Vec<Change>,
+        outputs: Vec<OutputChange>,
     },
     /// At least one blob wasn't terraform state but both were valid JSON —
     /// a generic structural JSON diff, pre-formatted.
@@ -58,7 +76,8 @@ impl StateDiff {
                 terraform_version: None,
                 serial: None,
                 changes,
-            } if changes.is_empty()
+                outputs,
+            } if changes.is_empty() && outputs.is_empty()
         )
     }
 }
@@ -116,6 +135,7 @@ pub fn diff_states(from: &[u8], to: &[u8]) -> StateDiff {
             terraform_version,
             serial,
             changes,
+            outputs: diff_outputs(&a, &b),
         }
     } else {
         let a = match facet_json::from_str::<facet_value::Value>(&from_s) {
@@ -127,5 +147,57 @@ pub fn diff_states(from: &[u8], to: &[u8]) -> StateDiff {
             Err(e) => return StateDiff::Error(format!("target version is not valid JSON: {e}")),
         };
         StateDiff::Raw(format!("{}", a.diff(&b)))
+    }
+}
+
+fn diff_outputs(a: &TfState, b: &TfState) -> Vec<OutputChange> {
+    let mut names: Vec<&String> = a.outputs.keys().chain(b.outputs.keys()).collect();
+    names.sort();
+    names.dedup();
+    names
+        .into_iter()
+        .filter_map(|name| {
+            let (kind, sensitive) = match (a.outputs.get(name), b.outputs.get(name)) {
+                (None, Some(o)) => (OutputChangeKind::Added, o.sensitive),
+                (Some(o), None) => (OutputChangeKind::Removed, o.sensitive),
+                (Some(x), Some(y)) if x.value != y.value || x.sensitive != y.sensitive => {
+                    let sensitive = x.sensitive || y.sensitive;
+                    let diff = (!sensitive && x.value != y.value).then(|| format!("{}", x.value.diff(&y.value)));
+                    (OutputChangeKind::Modified { diff }, sensitive)
+                }
+                _ => return None,
+            };
+            Some(OutputChange { name: name.clone(), kind, sensitive })
+        })
+        .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn state(outputs: &str) -> Vec<u8> {
+        format!(r#"{{"version":4,"terraform_version":"1.9.0","serial":1,"lineage":"l","outputs":{{{outputs}}},"resources":[]}}"#).into_bytes()
+    }
+
+    #[test]
+    fn output_changes_hide_sensitive_values() {
+        let a = state(r#""url":{"value":"a.example","type":"string","sensitive":false},"pw":{"value":"hunter2","type":"string","sensitive":true},"gone":{"value":1,"type":"number","sensitive":false}"#);
+        let b = state(r#""url":{"value":"b.example","type":"string","sensitive":false},"pw":{"value":"hunter3","type":"string","sensitive":true},"new":{"value":2,"type":"number","sensitive":false}"#);
+        let StateDiff::Structured { outputs, changes, .. } = diff_states(&a, &b) else { panic!("expected structured diff") };
+        assert!(changes.is_empty());
+        let by = |n: &str| outputs.iter().find(|o| o.name == n).unwrap();
+        assert!(matches!(by("new").kind, OutputChangeKind::Added));
+        assert!(matches!(by("gone").kind, OutputChangeKind::Removed));
+        let OutputChangeKind::Modified { diff: Some(d) } = &by("url").kind else { panic!("url should carry a diff") };
+        assert!(d.contains("b.example"));
+        let pw = by("pw");
+        assert!(pw.sensitive && matches!(pw.kind, OutputChangeKind::Modified { diff: None }));
+    }
+
+    #[test]
+    fn unchanged_outputs_are_not_reported() {
+        let a = state(r#""url":{"value":"a","type":"string","sensitive":false}"#);
+        assert!(diff_states(&a, &a).is_empty());
     }
 }

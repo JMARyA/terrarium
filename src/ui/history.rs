@@ -15,7 +15,7 @@ use super::layout::{Section, Shell, render};
 use super::workspace::{Tab, header, missing};
 use super::{require_login, valid_name};
 use crate::AppState;
-use crate::statediff::{Change, StateDiff};
+use crate::statediff::{Change, OutputChangeKind, StateDiff};
 
 #[derive(serde::Deserialize)]
 pub struct DiffQuery {
@@ -128,7 +128,7 @@ fn diff_card(app: &AppState, name: &str, from: u32, to: u32) -> Markup {
             (heading)
             @match &diff {
                 _ if diff.is_empty() => (empty("check", html! { "Identical — nothing changed between these versions." })),
-                StateDiff::Structured { terraform_version, serial, changes } => {
+                StateDiff::Structured { terraform_version, serial, changes, outputs } => {
                     @let added = changes.iter().filter(|c| matches!(c, Change::Added(_))).count();
                     @let removed = changes.iter().filter(|c| matches!(c, Change::Removed(_))).count();
                     @let modified = changes.len() - added - removed;
@@ -137,6 +137,7 @@ fn diff_card(app: &AppState, name: &str, from: u32, to: u32) -> Markup {
                         @if removed > 0 { span.chip.coral { "−" (removed) " removed" } }
                         @if modified > 0 { span.chip.amber { "~" (modified) " changed" } }
                         @if changes.is_empty() { span.chip.ghost { "no resource changes" } }
+                        @if !outputs.is_empty() { span.chip.dew { (outputs.len()) " output" (super::data::plural(outputs.len())) } }
                         @if let Some((a, b)) = serial { span.chip.mono.ghost { "serial " (a) " → " (b) } }
                         @if let Some((a, b)) = terraform_version { span.chip.mono.ghost { "tf " (a) " → " (b) } }
                     }
@@ -154,6 +155,26 @@ fn diff_card(app: &AppState, name: &str, from: u32, to: u32) -> Markup {
                                         }
                                     }
                                 },
+                            }
+                        }
+                    }
+                    @if !outputs.is_empty() {
+                        div.card-b style="border-top:1px solid var(--line);padding-bottom:6px" { h3.muted style="margin:0" { "Outputs" } }
+                        div {
+                            @for o in outputs {
+                                @let (class, sig) = match o.kind { OutputChangeKind::Added => ("add", "+"), OutputChangeKind::Removed => ("del", "−"), OutputChangeKind::Modified { .. } => ("mod", "~") };
+                                @match &o.kind {
+                                    OutputChangeKind::Modified { diff: Some(d) } => details.change class=(class) open {
+                                        summary { span.sig { (sig) } span.addr { "output." (o.name) } }
+                                        pre { (ansi::to_html(d)) }
+                                    },
+                                    _ => div.change class=(class) {
+                                        div.row {
+                                            span.sig { (sig) } span.addr { "output." (o.name) }
+                                            @if o.sensitive { span.chip.amber style="margin-left:auto" { (icon("lock")) "sensitive · value hidden" } }
+                                        }
+                                    },
+                                }
                             }
                         }
                     }

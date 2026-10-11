@@ -895,13 +895,13 @@ async fn handle_remote_command(remote: cli::RemoteCommand) {
                     Err(e) => die(e),
                 };
 
-                use crate::statediff::{Change, StateDiff};
+                use crate::statediff::{Change, OutputChangeKind, StateDiff};
 
                 match crate::statediff::diff_states(&from, &to) {
-                    StateDiff::Structured { terraform_version, serial, changes } => {
+                    StateDiff::Structured { terraform_version, serial, changes, outputs } => {
                         println!("{} {} {} {} {}", "diff".bold(), args.name.bold(), format!("v{}", args.from).cyan(), "→".dimmed(), format!("v{}", args.to).cyan());
 
-                        let no_changes = terraform_version.is_none() && serial.is_none() && changes.is_empty();
+                        let no_changes = terraform_version.is_none() && serial.is_none() && changes.is_empty() && outputs.is_empty();
 
                         if let Some((a, b)) = &terraform_version {
                             println!("  {} {} {} {}", "terraform:".dimmed(), a.yellow(), "→".dimmed(), b.yellow());
@@ -923,6 +923,24 @@ async fn handle_remote_command(remote: cli::RemoteCommand) {
                                         for line in inst.diff.lines() {
                                             println!("    {line}");
                                         }
+                                    }
+                                }
+                            }
+                        }
+
+                        if !outputs.is_empty() {
+                            println!("  {}", "outputs:".dimmed());
+                        }
+                        for o in &outputs {
+                            let name = format!("output.{}", o.name);
+                            let note = if o.sensitive { " (sensitive)".dimmed().to_string() } else { String::new() };
+                            match &o.kind {
+                                OutputChangeKind::Added => println!("  {} {}{note}", "+".bold().green(), name.green()),
+                                OutputChangeKind::Removed => println!("  {} {}{note}", "-".bold().red(), name.red()),
+                                OutputChangeKind::Modified { diff } => {
+                                    println!("  {} {}{note}", "~".bold().yellow(), name.yellow());
+                                    for line in diff.iter().flat_map(|d| d.lines()) {
+                                        println!("    {line}");
                                     }
                                 }
                             }
