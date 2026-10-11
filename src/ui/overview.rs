@@ -81,6 +81,7 @@ pub async fn page(maybe: MaybeUser, State(app): State<AppState>, headers: Header
                 div.stack {
                     (locks_card(&app))
                     (attention(&app, &names))
+                    (quiet(&app, &names))
                 }
             }
         }
@@ -177,6 +178,33 @@ fn attention(app: &AppState, names: &[String]) -> Markup {
                     }
                 }
             }
+        }
+    }
+}
+
+/// Workspaces nobody has pushed to in a long time.
+fn quiet(app: &AppState, names: &[String]) -> Markup {
+    let mut quiet: Vec<(&String, i64)> = names.iter().filter_map(|n| Some((n, data::quiet_days(app, n)?))).collect();
+    if quiet.is_empty() {
+        return html! {};
+    }
+    quiet.sort_by(|a, b| b.1.cmp(&a.1));
+    html! {
+        section.card {
+            div.card-h {
+                h2 { (icon("sprout")) "Gone quiet" }
+                span.aside { "no push in " (data::QUIET_AFTER_DAYS) "+ days" }
+            }
+            ul.rows {
+                @for (name, days) in &quiet {
+                    li {
+                        span.dot.quiet {}
+                        a.grow.row-link href={"/w/" (name)} { div.title.mono { (name) } }
+                        span.small.faint { (days) "d" }
+                    }
+                }
+            }
+            p.note style="padding:0 16px 14px;margin-top:0" { "Retired? Archive them to make that explicit and keep them out of the way." }
         }
     }
 }

@@ -52,6 +52,28 @@ pub fn parse_time(s: Option<&str>) -> Option<DateTime<Utc>> {
 
 // ── Health ──────────────────────────────────────────────────────────────
 
+/// A workspace with no push for this long has "gone quiet" — often retired
+/// infrastructure nobody archived.
+pub const QUIET_AFTER_DAYS: i64 = 90;
+
+/// When `name` was last pushed to.
+pub fn last_push(app: &AppState, name: &str) -> Option<DateTime<Utc>> {
+    let v = *app.state.list_versions(name).last()?;
+    match app.state.version_meta(name, v) {
+        Some(m) => parse_time(Some(&m.pushed_at)),
+        None => std::fs::metadata(app.state.versions_dir.join(name).join(v.to_string()))
+            .and_then(|m| m.modified())
+            .ok()
+            .map(DateTime::<Utc>::from),
+    }
+}
+
+/// Days since the last push, when that's past [`QUIET_AFTER_DAYS`].
+pub fn quiet_days(app: &AppState, name: &str) -> Option<i64> {
+    let days = (Utc::now() - last_push(app, name)?).num_days();
+    (days >= QUIET_AFTER_DAYS).then_some(days)
+}
+
 /// The one-glance status of a workspace, most urgent first.
 pub enum Health {
     Archived,
@@ -60,6 +82,7 @@ pub enum Health {
     Deny(usize),
     Unchecked,
     Warn(usize),
+    Quiet(i64),
     Ok,
 }
 
@@ -75,7 +98,7 @@ impl Health {
             Some(r) if r.error.is_some() => Health::Unchecked,
             Some(r) if r.deny_count() > 0 => Health::Deny(r.deny_count()),
             Some(r) if r.warn_count() > 0 => Health::Warn(r.warn_count()),
-            _ => Health::Ok,
+            _ => quiet_days(app, name).map_or(Health::Ok, Health::Quiet),
         }
     }
 
@@ -86,6 +109,7 @@ impl Health {
             Health::Locked => "locked",
             Health::Deny(_) => "deny",
             Health::Unchecked | Health::Warn(_) => "warn",
+            Health::Quiet(_) => "quiet",
             Health::Ok => "ok",
         }
     }
@@ -98,6 +122,7 @@ impl Health {
             Health::Deny(n) => format!("{n} violation{}", plural(*n)),
             Health::Unchecked => "policy not checked".into(),
             Health::Warn(n) => format!("{n} warning{}", plural(*n)),
+            Health::Quiet(d) => format!("quiet for {d} days"),
             Health::Ok => "idle".into(),
         }
     }

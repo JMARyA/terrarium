@@ -53,6 +53,7 @@ pub fn header(app: &AppState, name: &str, csrf: &str, tab: Tab) -> Markup {
                         Health::Archived => span.chip.ghost { (icon("archive")) "archived · read-only" },
                         Health::Deny(_) => span.chip.coral { (icon("policy")) (health.label()) },
                         Health::Warn(_) | Health::Unchecked => span.chip.amber { (icon("policy")) (health.label()) },
+                        Health::Quiet(d) => span.chip.ghost title="No push in a while — archive it if it's retired" { span.dot.quiet {} "quiet · " (d) "d" },
                     }
                     @if let Some(v) = current { span.chip.mono { "v" (v) } }
                     @if let Some(s) = &state {

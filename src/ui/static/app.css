@@ -170,6 +170,7 @@ main { min-width: 0; padding: 34px clamp(16px, 4vw, 48px) 80px; }
 .dot.deny { background: var(--coral); }
 .dot.warn { background: var(--amber); }
 .dot.archived { background: transparent; border: 1px solid var(--faint); }
+.dot.quiet { background: transparent; border: 1.5px dashed var(--dim); }
 @keyframes breathe { 50% { box-shadow: 0 0 0 5px rgba(244, 185, 76, 0.03); } }
 @media (prefers-reduced-motion: reduce) { .dot.locked { animation: none; } }
 
@@ -457,6 +458,8 @@ label.field { display: flex; flex-direction: column; gap: 6px; font-size: 13px; 
 
 /* ── History / diff ────────────────────────────────────────────────────── */
 
+.picker td { white-space: nowrap; padding-left: 12px; padding-right: 12px; }
+.picker th { padding-left: 12px; padding-right: 12px; }
 .picker td.pick { width: 30px; padding-right: 0; text-align: center; }
 .picker input[type=radio] { accent-color: var(--moss); cursor: pointer; width: 15px; height: 15px; margin: 0; }
 .picker tr.in-range td { background: rgba(168, 220, 108, 0.035); }
