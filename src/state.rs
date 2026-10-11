@@ -53,6 +53,24 @@ impl StateHeader {
     pub fn parse(blob: &[u8]) -> Self {
         serde_json::from_slice(blob).unwrap_or_default()
     }
+
+    /// Why replacing `self` (the current state) with `pushed` would move the
+    /// workspace backwards, if it would. A different lineage is a different
+    /// state altogether; a lower serial is an older copy of this one. States
+    /// missing either field (not Terraform state) aren't judged.
+    pub fn refuses(&self, pushed: &StateHeader) -> Option<String> {
+        if let (Some(current), Some(new)) = (&self.lineage, &pushed.lineage) {
+            if current != new {
+                return Some(format!("lineage {new} does not match the current state's lineage {current}"));
+            }
+        }
+        if let (Some(current), Some(new)) = (self.serial, pushed.serial) {
+            if new < current {
+                return Some(format!("serial {new} is older than the current serial {current}"));
+            }
+        }
+        None
+    }
 }
 
 /// Read a file, mapping "does not exist" to `None` and any other failure to
@@ -332,6 +350,9 @@ pub struct GetQuery {
 #[allow(non_snake_case)]
 pub struct LockQuery {
     pub ID: Option<String>,
+    /// Skip the serial/lineage check on a push.
+    #[serde(default)]
+    pub force: bool,
 }
 
 /// List all state names, optionally scoped to a path prefix
@@ -454,41 +475,60 @@ pub async fn put_state(
     Query(lock): Query<LockQuery>,
     AuthUser(user): AuthUser,
     body: Bytes,
-) -> Result<StatusCode, StatusCode> {
-    validate_name(&name)?;
+) -> axum::response::Response {
+    use axum::response::IntoResponse as _;
+    if let Err(status) = validate_name(&name) {
+        return status.into_response();
+    }
     tracing::info!("✍️ Trying to update state for {name}");
 
     // Archive, lock and write are checked and applied under one guard, so a
     // lock acquired concurrently can't land between the check and the write.
     let outcome = app.state.write(&name, |w| {
         if app.state.is_archived(&name) {
-            return Err(("forbidden", StatusCode::FORBIDDEN));
+            return Err(("forbidden", StatusCode::FORBIDDEN, String::new()));
         }
         if !lock_permits(&app, &name, lock.ID.as_deref()) {
-            return Err(("locked", StatusCode::LOCKED));
+            return Err(("locked", StatusCode::LOCKED, String::new()));
         }
-        // Only feeds metrics, so an unreadable previous state is not fatal here.
         let previous = app.state.get(&name).unwrap_or_else(|e| {
             tracing::warn!("Failed to read previous state for {name}: {e}");
             None
         });
+        // Refuse to move the workspace backwards: an older copy of the state
+        // or a different state entirely, usually a stale local file.
+        if let Some(prev) = previous.as_deref().filter(|_| !lock.force) {
+            if let Some(reason) = StateHeader::parse(prev).refuses(&StateHeader::parse(&body)) {
+                tracing::warn!("⏪ Refusing push to {name} by {}: {reason}", user.username);
+                return Err((
+                    "stale",
+                    StatusCode::CONFLICT,
+                    format!(
+                        "refusing push to {name}: {reason}.\n\
+                         To roll back on purpose, restore an older version \
+                         (terra remote state restore {name} --version N); \
+                         to overwrite anyway, push with ?force=true.\n"
+                    ),
+                ));
+            }
+        }
         match w.insert(&body, &user.username, None) {
             Ok(version) => Ok((version, previous)),
             Err(e) => {
                 tracing::error!("💥 Failed to persist state for {name}: {e}");
                 metrics::counter!("terrarium_state_write_errors_total", "workspace" => name.clone()).increment(1);
-                Err(("error", StatusCode::INTERNAL_SERVER_ERROR))
+                Err(("error", StatusCode::INTERNAL_SERVER_ERROR, String::new()))
             }
         }
     });
     let (version, previous) = match outcome {
         Ok(ok) => ok,
-        Err((result, status)) => {
+        Err((result, status, message)) => {
             if status == StatusCode::FORBIDDEN {
                 tracing::info!("📦 State {name} is archived, rejecting write");
             }
             metrics::counter!("terrarium_state_pushes_total", "workspace" => name.clone(), "result" => result).increment(1);
-            return Err(status);
+            return (status, message).into_response();
         }
     };
     let existed = previous.is_some();
@@ -525,7 +565,7 @@ pub async fn put_state(
     );
 
     app.webhooks.fire("state.push", &name, version, &user.username).await;
-    Ok(StatusCode::OK)
+    StatusCode::OK.into_response()
 }
 
 /// Delete terraform state via DELETE
@@ -606,6 +646,19 @@ mod tests {
         std::fs::write(c.versions_dir.join("ws").join("2"), b"old").unwrap();
         assert_eq!(c.version_meta("ws", 2), None);
         let _ = std::fs::remove_dir_all(base);
+    }
+
+    #[test]
+    fn stale_pushes_are_refused() {
+        let h = |serial: u64, lineage: &str| StateHeader { serial: Some(serial), lineage: Some(lineage.into()), terraform_version: None };
+        let current = h(5, "a");
+        assert_eq!(current.refuses(&h(5, "a")), None, "same serial is a no-op push");
+        assert_eq!(current.refuses(&h(6, "a")), None);
+        assert!(current.refuses(&h(4, "a")).unwrap().contains("older"));
+        assert!(current.refuses(&h(9, "b")).unwrap().contains("lineage"));
+        // Not Terraform state on either side: nothing to judge.
+        assert_eq!(StateHeader::parse(b"{}").refuses(&h(1, "a")), None);
+        assert_eq!(current.refuses(&StateHeader::parse(b"not json")), None);
     }
 
     #[test]

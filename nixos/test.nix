@@ -138,6 +138,20 @@ pkgs.testers.runNixOSTest {
     )
     assert "2" in out, f"Version 2 missing: {out}"
 
+    # Pushing the older serial again moves the workspace backwards: refused
+    code = server.succeed(
+        "curl -s -o /dev/null -w '%{http_code}' -u admin:secret -X POST"
+        " http://localhost:8080/state/prod/web"
+        " -H 'Content-Type: application/json' -d @/tmp/state.json"
+    )
+    assert code == "409", f"Stale push should be refused with 409, got {code}"
+
+    # Version metadata records who pushed
+    out = server.succeed(
+        "curl -sf -u admin:secret 'http://localhost:8080/versions/prod/web?detail=true'"
+    )
+    assert '"user":"admin"' in out and '"serial":2' in out, f"Version metadata missing: {out}"
+
     # Acquire a lock
     server.succeed(
         "printf '%s' "

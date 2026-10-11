@@ -172,6 +172,10 @@ Provide credentials via `$TF_HTTP_USERNAME` and `$TF_HTTP_PASSWORD`, then run `t
 
 Workspace names support path prefixes: `infra/prod`, `apps/backend/staging`, etc.
 
+### Stale pushes
+
+A push that would move a workspace backwards is refused with `409 Conflict`: a state whose `serial` is lower than the current one (an old local copy), or whose `lineage` differs (a different state altogether). That's usually a stale `terraform.tfstate` or a `state push -force` aimed at the wrong workspace. To roll back on purpose, restore an older version instead; to overwrite anyway, push with `?force=true`. Pushes that aren't Terraform state are not checked.
+
 ---
 
 ## User Management
