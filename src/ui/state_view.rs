@@ -73,7 +73,7 @@ pub async fn page(
             span.faint.small { (fmt_size(data.len() as u64)) }
         }
         @match parsed {
-            Ok(state) => (overview(&state)),
+            Ok(state) => (overview(&state, &inspect_base(&name, selected))),
             Err(_) => section.card {
                 (empty("file", html! { "This version isn't Terraform state v4, so there's nothing to break down. "
                     "Raw JSON: " code { "terra remote state get " (name) } }))
@@ -83,9 +83,17 @@ pub async fn page(
     render(&shell, &name, body).into_response()
 }
 
-fn overview(state: &TfState) -> Markup {
-    // type → [(label, instances)], split by mode.
-    let mut groups: BTreeMap<(bool, &str), Vec<(String, usize)>> = BTreeMap::new();
+/// Inspector URL for this workspace and version, minus the `addr`.
+fn inspect_base(name: &str, version: Option<u32>) -> String {
+    match version {
+        Some(v) => format!("/ui/resource/{name}?version={v}&addr="),
+        None => format!("/ui/resource/{name}?addr="),
+    }
+}
+
+fn overview(state: &TfState, inspect: &str) -> Markup {
+    // type → [(label, instances, address)], split by mode.
+    let mut groups: BTreeMap<(bool, &str), Vec<(String, usize, String)>> = BTreeMap::new();
     let mut instances = 0usize;
     for r in &state.resources {
         instances += r.instances.len();
@@ -93,7 +101,7 @@ fn overview(state: &TfState) -> Markup {
             Some(m) => format!("{m}.{}", r.name),
             None => r.name.clone(),
         };
-        groups.entry((r.mode == "data", &r.type_)).or_default().push((label, r.instances.len()));
+        groups.entry((r.mode == "data", &r.type_)).or_default().push((label, r.instances.len(), r.address()));
     }
     let mut outputs: Vec<_> = state.outputs.iter().collect();
     outputs.sort_by(|a, b| a.0.cmp(b.0));
@@ -122,8 +130,12 @@ fn overview(state: &TfState) -> Markup {
                                     span.n { (names.len()) }
                                 }
                                 ul {
-                                    @for (label, n) in names {
-                                        li { span { (label) } @if *n != 1 { span.k { "×" (n) } } }
+                                    @for (label, n, addr) in names {
+                                        li {
+                                            button.res type="button" hx-get={(inspect) (urlencode(addr))} hx-target="#inspector"
+                                                title={"Inspect " (addr)} { (label) }
+                                            @if *n != 1 { span.k { "×" (n) } }
+                                        }
                                     }
                                 }
                             }
@@ -132,6 +144,8 @@ fn overview(state: &TfState) -> Markup {
                 }
             }
             div.stack {
+                div #inspector { (inspector_hint()) }
+                template #inspector-empty { (inspector_hint()) }
                 section.card {
                     div.card-h { h2 { (icon("file")) "Specimen" } }
                     div.card-b {
@@ -173,8 +187,25 @@ fn overview(state: &TfState) -> Markup {
                         span { "hover to trace · click to pin" }
                     }
                 }
-                div.graph-wrap { (svg) }
+                div.graph-wrap data-inspect=(inspect) { (svg) }
             }
         }
     }
+}
+
+fn inspector_hint() -> Markup {
+    html! {
+        section.card.inspector-hint {
+            (empty("search", html! { "Pick a resource — from the list or the graph — to see its attributes. Sensitive values stay hidden." }))
+        }
+    }
+}
+
+fn urlencode(s: &str) -> String {
+    s.bytes()
+        .map(|b| match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => (b as char).to_string(),
+            _ => format!("%{b:02X}"),
+        })
+        .collect()
 }

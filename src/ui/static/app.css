@@ -397,6 +397,33 @@ dl.kv dd { margin: 0; font-family: var(--mono); font-size: 12.5px; overflow-wrap
 .kind.managed { color: var(--moss); background: var(--moss-wash); }
 .kind.data { color: var(--dew); background: var(--dew-wash); }
 
+/* Inspector */
+.rgroup button.res {
+  all: unset; cursor: pointer; color: var(--fg-2); border-radius: 4px; padding: 0 3px; margin: 0 -3px;
+  overflow-wrap: anywhere;
+}
+.rgroup button.res:hover { color: var(--moss); background: var(--moss-wash); }
+.rgroup button.res:focus-visible { outline: 2px solid var(--moss); }
+.inspector .inst { border-top: 1px solid var(--line); }
+.inspector .inst:first-of-type { border-top: 0; }
+.inspector .inst-h { padding: 8px 16px 0; color: var(--dim); }
+.inspector .inst-f { padding: 0 16px 12px; }
+.inspector > .inst > dl.attrs { padding: 12px 16px; margin: 0; max-height: 62vh; overflow: auto; }
+dl.attrs { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 3px 14px; margin: 0; font: 500 12.5px/1.55 var(--mono); }
+dl.attrs dt { color: var(--dim); }
+dl.attrs dd { margin: 0; min-width: 0; overflow-wrap: anywhere; }
+dl.attrs dl.attrs, dl.attrs ol.attrs-list { padding-left: 10px; border-left: 1px solid var(--line); }
+ol.attrs-list { margin: 0; padding: 0 0 0 10px; list-style: none; counter-reset: i; }
+ol.attrs-list > li { counter-increment: i; display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 0 10px; }
+ol.attrs-list > li::before { content: counter(i, decimal) ""; color: var(--faint); font-size: 11px; }
+.v.str { color: var(--fg); }
+.v.str::before, .v.str::after, details.long .str::before { content: '"'; color: var(--faint); }
+.v.num { color: var(--dew); }
+.v.bool { color: var(--amber); }
+.v.masked { color: var(--amber); letter-spacing: 0.1em; cursor: help; }
+details.long summary { cursor: pointer; list-style: none; }
+details.long[open] summary { display: none; }
+
 .graph-wrap { overflow: auto; max-height: 72vh; background: radial-gradient(circle at 1px 1px, rgba(255, 255, 255, 0.04) 1px, transparent 0) 0 0 / 18px 18px; border-radius: 0 0 var(--r) var(--r); }
 .graph-wrap svg { display: block; }
 .graph .edge { fill: none; stroke: #33463c; stroke-width: 1.4; transition: stroke .12s, opacity .12s; }

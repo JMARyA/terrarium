@@ -23,6 +23,7 @@ mod data;
 mod graph;
 mod help;
 mod history;
+mod inspect;
 mod layout;
 mod overview;
 mod policies;
@@ -59,6 +60,7 @@ pub fn routes() -> Router<AppState> {
         .route("/ui/search", get(search::results))
         .route("/ui/locks", get(overview::locks_fragment))
         .route("/ui/lock/{*name}", get(workspace::lock_fragment))
+        .route("/ui/resource/{*name}", get(inspect::fragment))
         .route("/ui/unlock/{*name}", post(actions::force_unlock))
         .route("/ui/archive/{*name}", post(actions::archive))
         .route("/ui/unarchive/{*name}", post(actions::unarchive))

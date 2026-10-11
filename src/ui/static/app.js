@@ -198,6 +198,12 @@
     const node = e.target.closest(".node");
     pinned = node && pinned !== node.dataset.id ? node.dataset.id : null;
     focusNode(svg, pinned);
+    // Pinning a node also opens it in the inspector.
+    const base = svg.closest("[data-inspect]")?.dataset.inspect;
+    if (pinned && base && $("#inspector")) {
+      htmx.ajax("GET", base + encodeURIComponent(pinned), { target: "#inspector" });
+      $("#inspector").scrollIntoView({ behavior: "smooth", block: "nearest" });
+    }
   });
 
   // ── Mobile menu ────────────────────────────────────────────────────────
