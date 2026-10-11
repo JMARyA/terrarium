@@ -3,7 +3,9 @@ use axum::Json;
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::body::Bytes;
+use dashmap::DashMap;
 use std::path::{Path as FsPath, PathBuf};
+use std::sync::{Arc, Mutex};
 
 use crate::AppState;
 
@@ -11,23 +13,35 @@ use crate::AppState;
 pub struct StateContainer {
     pub dir: PathBuf,
     pub versions_dir: PathBuf,
+    /// Per-workspace write guards. Allocating the next version number and
+    /// writing it must happen as one step, or two concurrent pushes both claim
+    /// version N and one history entry is silently overwritten.
+    writers: Arc<DashMap<String, Arc<Mutex<()>>>>,
+}
+
+/// Read a file, mapping "does not exist" to `None` and any other failure to
+/// an error, so an unreadable state is never mistaken for an absent one.
+fn read_opt(path: &FsPath) -> std::io::Result<Option<Vec<u8>>> {
+    match std::fs::read(path) {
+        Ok(data) => Ok(Some(data)),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(e) => Err(e),
+    }
 }
 
 impl StateContainer {
     pub fn new(dir: PathBuf, versions_dir: PathBuf) -> Self {
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::create_dir_all(&versions_dir).unwrap();
-        Self { dir, versions_dir }
+        Self { dir, versions_dir, writers: Arc::default() }
     }
 
-    pub fn get(&self, name: &str) -> Option<Vec<u8>> {
-        let path = self.dir.join(name);
-        if path.exists() { Some(std::fs::read(path).unwrap()) } else { None }
+    pub fn get(&self, name: &str) -> std::io::Result<Option<Vec<u8>>> {
+        read_opt(&self.dir.join(name))
     }
 
-    pub fn get_version(&self, name: &str, version: u32) -> Option<Vec<u8>> {
-        let path = self.versions_dir.join(name).join(version.to_string());
-        if path.exists() { std::fs::read(path).ok() } else { None }
+    pub fn get_version(&self, name: &str, version: u32) -> std::io::Result<Option<Vec<u8>>> {
+        read_opt(&self.versions_dir.join(name).join(version.to_string()))
     }
 
     pub fn list_versions(&self, name: &str) -> Vec<u32> {
@@ -58,14 +72,20 @@ impl StateContainer {
     /// + rename), so a failed or partial write can never truncate or corrupt
     /// an existing state or version file. The versioned copy is written first,
     /// so the head is only advanced once the history entry is durable.
-    pub fn insert(&self, name: &str, state: Vec<u8>) -> std::io::Result<()> {
+    ///
+    /// Writes to one workspace are serialized, so every push gets its own
+    /// version number. Returns the version that was written.
+    pub fn insert(&self, name: &str, state: Vec<u8>) -> std::io::Result<u32> {
+        let guard = self.writers.entry(name.to_string()).or_default().clone();
+        let _held = guard.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+
         let version = self.list_versions(name).last().copied().unwrap_or(0) + 1;
         let version_path = self.versions_dir.join(name).join(version.to_string());
         atomic_write(&version_path, &state)?;
 
         let path = self.dir.join(name);
         atomic_write(&path, &state)?;
-        Ok(())
+        Ok(version)
     }
 
     pub fn is_archived(&self, name: &str) -> bool {
@@ -294,6 +314,11 @@ pub async fn get_state(
         Some(v) => app.state.get_version(&name, v),
         None => app.state.get(&name),
     };
+    let data = data.map_err(|e| {
+        tracing::error!("💥 Failed to read state for {name}: {e}");
+        metrics::counter!("terrarium_state_pulls_total", "workspace" => name.clone(), "result" => "error").increment(1);
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
     match data {
         Some(data) => {
             metrics::counter!("terrarium_state_pulls_total", "workspace" => name.clone(), "result" => "ok").increment(1);
@@ -304,6 +329,20 @@ pub async fn get_state(
             metrics::counter!("terrarium_state_pulls_total", "workspace" => name.clone(), "result" => "not_found").increment(1);
             Err(StatusCode::NOT_FOUND)
         }
+    }
+}
+
+/// Whether a write to `name` carrying `lock_id` may proceed.
+///
+/// A held lock admits only its own ID — a write with no ID or a different one
+/// is refused, otherwise anyone could push over a running apply just by
+/// leaving `?ID=` off. A write naming an ID when no lock is held is refused
+/// too: its lock was released or taken over, so the writer is working from a
+/// view of the state that may no longer be current.
+fn lock_permits(app: &AppState, name: &str, lock_id: Option<&str>) -> bool {
+    match lock_id {
+        Some(id) => app.locks.verify_lock(name, id),
+        None => app.locks.get(name).is_none(),
     }
 }
 
@@ -324,26 +363,31 @@ pub async fn put_state(
         return Err(StatusCode::FORBIDDEN);
     }
 
-    if let Some(lock_id) = lock.ID {
-        if !app.locks.verify_lock(&name, &lock_id) {
-            metrics::counter!("terrarium_state_pushes_total", "workspace" => name.clone(), "result" => "locked").increment(1);
-            return Err(StatusCode::LOCKED);
-        }
+    if !lock_permits(&app, &name, lock.ID.as_deref()) {
+        metrics::counter!("terrarium_state_pushes_total", "workspace" => name.clone(), "result" => "locked").increment(1);
+        return Err(StatusCode::LOCKED);
     }
 
-    let existed = app.state.get(&name).is_some();
-    let previous = app.state.get(&name);
+    // Only feeds metrics, so an unreadable previous state is not fatal here.
+    let previous = app.state.get(&name).unwrap_or_else(|e| {
+        tracing::warn!("Failed to read previous state for {name}: {e}");
+        None
+    });
+    let existed = previous.is_some();
     let before_counts = previous.as_deref().and_then(crate::observability::state_counts);
     let before_len = previous.as_ref().map(|b| b.len()).unwrap_or(0);
     let body_len = body.len();
     let after_counts = crate::observability::state_counts(&body);
 
-    if let Err(e) = app.state.insert(&name, body.to_vec()) {
-        tracing::error!("💥 Failed to persist state for {name}: {e}");
-        metrics::counter!("terrarium_state_write_errors_total", "workspace" => name.clone()).increment(1);
-        metrics::counter!("terrarium_state_pushes_total", "workspace" => name.clone(), "result" => "error").increment(1);
-        return Err(StatusCode::INTERNAL_SERVER_ERROR);
-    }
+    let version = match app.state.insert(&name, body.to_vec()) {
+        Ok(version) => version,
+        Err(e) => {
+            tracing::error!("💥 Failed to persist state for {name}: {e}");
+            metrics::counter!("terrarium_state_write_errors_total", "workspace" => name.clone()).increment(1);
+            metrics::counter!("terrarium_state_pushes_total", "workspace" => name.clone(), "result" => "error").increment(1);
+            return Err(StatusCode::INTERNAL_SERVER_ERROR);
+        }
+    };
     metrics::counter!("terrarium_state_pushes_total", "workspace" => name.clone(), "result" => "ok").increment(1);
     metrics::counter!("terrarium_state_version_creations_total", "workspace" => name.clone()).increment(1);
     metrics::histogram!("terrarium_state_push_bytes", "workspace" => name.clone()).record(body_len as f64);
@@ -358,7 +402,7 @@ pub async fn put_state(
         crate::observability::observe_delta("terrarium_tf_instance_delta", &name, bi, ai);
         crate::observability::observe_delta("terrarium_tf_output_delta", &name, bo, ao);
     }
-    let version = app.state.list_versions(&name).last().copied();
+    let version = Some(version);
 
     // Lint the state we just stored. Deliberately after the write and after the
     // response is decided: server-side evaluation records what it finds and
@@ -386,11 +430,9 @@ pub async fn delete_state(
     validate_name(&name)?;
     tracing::info!("♻️ Trying to delete state for {name}");
 
-    if let Some(lock_id) = lock.ID {
-        if !app.locks.verify_lock(&name, &lock_id) {
-            metrics::counter!("terrarium_state_deletions_total", "workspace" => name.clone(), "result" => "locked").increment(1);
-            return Err(StatusCode::LOCKED);
-        }
+    if !lock_permits(&app, &name, lock.ID.as_deref()) {
+        metrics::counter!("terrarium_state_deletions_total", "workspace" => name.clone(), "result" => "locked").increment(1);
+        return Err(StatusCode::LOCKED);
     }
 
     app.state.remove(&name);
@@ -424,12 +466,41 @@ mod tests {
         c.insert("infra/prod", b"v1".to_vec()).unwrap();
         c.insert("infra/prod", b"v2".to_vec()).unwrap();
 
-        assert_eq!(c.get("infra/prod").as_deref(), Some(&b"v2"[..]));
+        assert_eq!(c.get("infra/prod").unwrap().as_deref(), Some(&b"v2"[..]));
         assert_eq!(c.list_versions("infra/prod"), vec![1, 2]);
-        assert_eq!(c.get_version("infra/prod", 1).as_deref(), Some(&b"v1"[..]));
+        assert_eq!(c.get_version("infra/prod", 1).unwrap().as_deref(), Some(&b"v1"[..]));
+        assert_eq!(c.get("missing").unwrap(), None);
         // A nested workspace must be the only listed state (no temp/sidecar noise).
         assert_eq!(c.list(None, false), vec!["infra/prod".to_string()]);
 
+        let _ = std::fs::remove_dir_all(base);
+    }
+
+    #[test]
+    fn concurrent_inserts_get_distinct_versions() {
+        let (c, base) = tmp_container();
+        let handles: Vec<_> = (0..16)
+            .map(|i| {
+                let c = c.clone();
+                std::thread::spawn(move || c.insert("app", format!("v{i}").into_bytes()).unwrap())
+            })
+            .collect();
+        let mut written: Vec<u32> = handles.into_iter().map(|h| h.join().unwrap()).collect();
+        written.sort_unstable();
+
+        assert_eq!(written, (1..=16).collect::<Vec<_>>());
+        assert_eq!(c.list_versions("app"), written);
+        let _ = std::fs::remove_dir_all(base);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn unreadable_state_is_an_error_not_absent() {
+        let (c, base) = tmp_container();
+        // A directory where the state file should be makes `read` fail with
+        // something other than NotFound.
+        std::fs::create_dir_all(c.dir.join("broken")).unwrap();
+        assert!(c.get("broken").is_err());
         let _ = std::fs::remove_dir_all(base);
     }
 

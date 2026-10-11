@@ -151,7 +151,7 @@ async fn collect(app: &AppState, data_dir: &Path) {
     gauge!("terrarium_states_total", "archived" => "true").set(archived_states.len() as f64);
     gauge!("terrarium_state_versions_total").set(count_files(&data_dir.join("versions")) as f64);
     for name in &active_states {
-        if let Some(bytes) = app.state.get(name) {
+        if let Ok(Some(bytes)) = app.state.get(name) {
             histogram!("terrarium_state_size_bytes").record(bytes.len() as f64);
             gauge!("terrarium_state_current_bytes", "workspace" => name.clone())
                 .set(bytes.len() as f64);
@@ -274,7 +274,7 @@ struct Fleet {
 fn fleet_composition(state: &crate::state::StateContainer, names: &[String]) -> Fleet {
     let mut fleet = Fleet::default();
     for name in names {
-        let Some(bytes) = state.get(name) else { continue };
+        let Ok(Some(bytes)) = state.get(name) else { continue };
         let Ok(value) = serde_json::from_slice::<serde_json::Value>(&bytes) else {
             continue;
         };
@@ -324,7 +324,7 @@ fn tf_aggregates(
     let mut sensitive_outputs = 0;
 
     for name in names {
-        let Some(bytes) = state.get(name) else {
+        let Ok(Some(bytes)) = state.get(name) else {
             continue;
         };
         let Ok(value) = serde_json::from_slice::<serde_json::Value>(&bytes) else {

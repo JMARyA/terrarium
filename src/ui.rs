@@ -502,7 +502,7 @@ pub async fn workspace(maybe: MaybeUser, State(app): State<AppState>, Path(name)
     }
 
     let versions = app.state.list_versions(&name);
-    if versions.is_empty() && app.state.get(&name).is_none() {
+    if versions.is_empty() && !matches!(app.state.get(&name), Ok(Some(_))) {
         return (StatusCode::NOT_FOUND, page("Not found", Some(&user.username), &format!(r#"<h1>{}</h1><div class="panel dim">No such workspace.</div>"#, esc(&name)))).into_response();
     }
 
@@ -521,7 +521,7 @@ pub async fn workspace(maybe: MaybeUser, State(app): State<AppState>, Path(name)
         archived_badge,
         violation_badge(&app.violations, &name)
     );
-    if app.state.get(&name).is_some() {
+    if matches!(app.state.get(&name), Ok(Some(_))) {
         body.push_str(&format!(
             r#"<p><a href="/graph/{}">↳ state overview &amp; dependency graph</a></p>"#,
             esc(&name)
@@ -715,8 +715,8 @@ pub async fn diff_view(maybe: MaybeUser, State(app): State<AppState>, Path(name)
         return not_found(&user.username, &name);
     }
 
-    let from = app.state.get_version(&name, q.from);
-    let to = app.state.get_version(&name, q.to);
+    let from = app.state.get_version(&name, q.from).ok().flatten();
+    let to = app.state.get_version(&name, q.to).ok().flatten();
     let (Some(from), Some(to)) = (from, to) else {
         return (StatusCode::NOT_FOUND, page("Diff", Some(&user.username), r#"<div class="panel dim">One of the requested versions does not exist.</div>"#)).into_response();
     };
@@ -1127,7 +1127,7 @@ pub async fn graph_view(
         Some(v) => app.state.get_version(&name, v),
         None => app.state.get(&name),
     };
-    let Some(data) = data else {
+    let Some(data) = data.ok().flatten() else {
         return (
             StatusCode::NOT_FOUND,
             page(
