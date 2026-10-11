@@ -99,6 +99,16 @@ in
       '';
     };
 
+    keepVersions = lib.mkOption {
+      type = lib.types.nullOr lib.types.ints.positive;
+      default = null;
+      example = 100;
+      description = ''
+        Keep only the newest N versions of each workspace, pruning older ones
+        on push. `null` (the default) keeps every version.
+      '';
+    };
+
     maxBodyBytes = lib.mkOption {
       type = lib.types.nullOr lib.types.ints.positive;
       default = null;
@@ -157,6 +167,8 @@ in
         TERRARIUM_MIRROR_INTERVAL = toString cfg.mirrorInterval;
       } // lib.optionalAttrs (cfg.maxBodyBytes != null) {
         TERRARIUM_MAX_BODY_BYTES = toString cfg.maxBodyBytes;
+      } // lib.optionalAttrs (cfg.keepVersions != null) {
+        TERRARIUM_KEEP_VERSIONS = toString cfg.keepVersions;
       } // lib.optionalAttrs (cfg.lockTtl != null) {
         TERRARIUM_LOCK_TTL = toString cfg.lockTtl;
       };

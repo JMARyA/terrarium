@@ -64,6 +64,10 @@ pub async fn page(
                 @if let (Some(s), Some(c)) = (selected, current) {
                     span.chip.amber { "viewing an older version" }
                     a.btn.sm href={"/diff/" (name) "?from=" (s) "&to=" (c)} { (icon("history")) "Compare with current" }
+                    button.btn.sm.quiet type="button" data-copy={"terra remote state restore " (name) " --version " (s)}
+                        title="Copy the command that makes this version current again" {
+                        (icon("copy")) span.label { "Copy restore command" }
+                    }
                 }
             }
             span.faint.small { (fmt_size(data.len() as u64)) }

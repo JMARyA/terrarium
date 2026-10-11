@@ -39,6 +39,7 @@ pub const EVENTS: &[&str] = &[
     "state.delete",
     "state.archive",
     "state.unarchive",
+    "state.restore",
     "lock.acquire",
     "lock.release",
     "lock.expire",

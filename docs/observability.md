@@ -172,6 +172,8 @@ The dashboard is organized around:
 
 | Metric | Type | Labels | Description |
 | --- | --- | --- | --- |
+| `terrarium_state_restores_total` | counter | `workspace`, `result` | Restores of an older version (`ok`, `locked`, `forbidden`, `not_found`, `error`). |
+| `terrarium_state_versions_pruned_total` | counter | `workspace` | Versions deleted by `TERRARIUM_KEEP_VERSIONS` retention. |
 | `terrarium_state_pushes_total` | counter | `workspace`, `result` | State push attempts. `result` is `ok`, `locked`, `forbidden` (archived), `stale` (older serial or different lineage than the current state) or `error` (the write to disk failed). |
 | `terrarium_state_write_errors_total` | counter | `workspace` | State writes that failed at the filesystem layer (e.g. the data volume is full). The push is rejected with `500` and the existing state is left intact. |
 | `terrarium_state_pulls_total` | counter | `workspace`, `result` | State pull attempts. |

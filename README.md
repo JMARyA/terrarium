@@ -75,6 +75,8 @@ All data is stored under `TERRARIUM_DATA` (`/app` in the container, `./data` on 
 | `users/`        | User database        |
 | `webhooks.json` | Registered webhooks and their signing secrets (`0600`) |
 
+Every push is kept forever by default. Set `TERRARIUM_KEEP_VERSIONS=N` to keep only the newest N versions per workspace; older ones are pruned on the next push.
+
 The server listens on `0.0.0.0:8080`; override with `TERRARIUM_LISTEN` (e.g. `127.0.0.1:9000`).
 
 Request bodies (state pushes, provider uploads) are capped at 256 MiB by default. Override with `TERRARIUM_MAX_BODY_BYTES` (in bytes).
@@ -277,6 +279,10 @@ terra remote state archive infra/prod
 
 # Unarchive a state (re-enables writes)
 terra remote state unarchive infra/prod
+
+# Roll back: make version 3 current again (pushed as a new version, so
+# history is never rewritten). Works on deleted states too.
+terra remote state restore infra/prod --version 3
 ```
 
 ### Locks
@@ -319,7 +325,7 @@ terra remote webhook rotate-secret <id>
 terra remote webhook remove <id>
 ```
 
-**Supported events:** `state.push`, `state.delete`, `state.archive`, `state.unarchive`, `lock.acquire`, `lock.release`, `lock.expire`
+**Supported events:** `state.push`, `state.delete`, `state.archive`, `state.unarchive`, `state.restore`, `lock.acquire`, `lock.release`, `lock.expire`
 
 **Payload:**
 
@@ -349,6 +355,7 @@ All endpoints require authentication — either HTTP Basic Auth or an `Authoriza
 | `GET`    | `/state/{name}`         | Get current state (`?version=N` for history)               |
 | `POST`   | `/state/{name}`         | Push state (`?ID=<lock-id>` if locked)                     |
 | `DELETE` | `/state/{name}`         | Delete state                                               |
+| `POST`   | `/restore/{name}`       | Make `?version=N` current again, as a new version (`&ID=` if locked) |
 | `GET`    | `/versions/{name}`      | List version numbers (`?detail=true`: with who pushed each, when, serial) |
 | `POST`   | `/archive/{name}`       | Archive a state (mark read-only)                           |
 | `DELETE` | `/archive/{name}`       | Unarchive a state (re-enable writes)                       |

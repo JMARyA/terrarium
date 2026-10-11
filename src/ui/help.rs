@@ -56,6 +56,7 @@ terra terra-login                       # save {url} + credentials
 terra remote state list                 # all workspaces
 terra remote state versions infra/prod  # version history
 terra remote state diff infra/prod 3 4  # structural diff
+terra remote state restore infra/prod --version 3  # roll back
 terra remote state unlock infra/prod    # force-unlock
 terra remote lock list                  # who holds what
 terra remote webhook add infra/prod https://hooks.example/tf"#)))
@@ -109,6 +110,7 @@ provider_installation {{
                 (codeblock(r#"TERRARIUM_DATA              data directory (default: current dir)
 TERRARIUM_TLS               1 = mark session cookies Secure (when behind TLS)
 TERRARIUM_LISTEN            address to listen on (default 0.0.0.0:8080)
+TERRARIUM_KEEP_VERSIONS     keep only the newest N versions per workspace (default: all)
 TERRARIUM_LOCK_TTL          seconds before a lock may be taken over (default 7200, 0 = never)
 TERRARIUM_MAX_BODY_BYTES    request body cap (default 256 MiB)
 TERRARIUM_WEBHOOK_NETWORKS  where webhooks may deliver

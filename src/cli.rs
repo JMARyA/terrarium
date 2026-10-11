@@ -919,6 +919,7 @@ pub enum RemoteStateSubCommand {
     Unlock(RemoteStateUnlock),
     Archive(RemoteStateArchive),
     Unarchive(RemoteStateUnarchive),
+    Restore(RemoteStateRestore),
 }
 
 #[derive(FromArgs)]
@@ -988,6 +989,18 @@ pub struct RemoteStateArchive {
     /// state name (e.g. infra/prod)
     #[argh(positional)]
     pub name: String,
+}
+
+#[derive(FromArgs)]
+/// Make an older version current again (pushed as a new version)
+#[argh(subcommand, name = "restore")]
+pub struct RemoteStateRestore {
+    /// state name (e.g. infra/prod)
+    #[argh(positional)]
+    pub name: String,
+    /// version to restore (see `terra remote state versions`)
+    #[argh(option)]
+    pub version: u32,
 }
 
 #[derive(FromArgs)]

@@ -152,6 +152,14 @@ pkgs.testers.runNixOSTest {
     )
     assert '"user":"admin"' in out and '"serial":2' in out, f"Version metadata missing: {out}"
 
+    # Restore version 1: becomes version 3, with a serial past the current one
+    out = server.succeed(
+        "curl -sf -u admin:secret -X POST 'http://localhost:8080/restore/prod/web?version=1'"
+    )
+    assert '"version":3' in out, f"Restore should create version 3: {out}"
+    out = server.succeed("curl -sf -u admin:secret http://localhost:8080/state/prod/web")
+    assert '"serial": 3' in out or '"serial":3' in out, f"Restored state should carry serial 3: {out}"
+
     # Acquire a lock
     server.succeed(
         "printf '%s' "

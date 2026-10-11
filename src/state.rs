@@ -15,6 +15,30 @@ pub struct StateContainer {
     pub versions_dir: PathBuf,
     /// Per-workspace guards; see [`StateContainer::write`].
     writers: Arc<DashMap<String, Arc<Mutex<()>>>>,
+    /// Keep only this many versions per workspace; `None` keeps all.
+    keep: Option<usize>,
+}
+
+/// `TERRARIUM_KEEP_VERSIONS`: how many versions to keep per workspace.
+/// Unset or `0` keeps every version.
+pub fn keep_versions_from_env() -> Option<usize> {
+    let raw = std::env::var("TERRARIUM_KEEP_VERSIONS").ok()?;
+    match raw.trim().parse::<usize>() {
+        Ok(0) => None,
+        Ok(n) => Some(n),
+        Err(_) => {
+            tracing::warn!("Invalid TERRARIUM_KEEP_VERSIONS {raw:?}, keeping every version");
+            None
+        }
+    }
+}
+
+/// Why a restore failed.
+#[derive(Debug)]
+pub enum RestoreError {
+    /// The requested version doesn't exist (never did, or was pruned).
+    NotFound,
+    Io(std::io::Error),
 }
 
 /// What terrarium records about a pushed version, stored next to it as
@@ -87,7 +111,13 @@ impl StateContainer {
     pub fn new(dir: PathBuf, versions_dir: PathBuf) -> Self {
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::create_dir_all(&versions_dir).unwrap();
-        Self { dir, versions_dir, writers: Arc::default() }
+        Self { dir, versions_dir, writers: Arc::default(), keep: None }
+    }
+
+    /// Prune each workspace to its newest `keep` versions on every write.
+    pub fn keep_versions(mut self, keep: Option<usize>) -> Self {
+        self.keep = keep;
+        self
     }
 
     pub fn get(&self, name: &str) -> std::io::Result<Option<Vec<u8>>> {
@@ -218,7 +248,44 @@ impl Writer<'_> {
         atomic_write(&dir.join(format!("{version}.meta.json")), &json)?;
 
         atomic_write(&c.dir.join(self.name), state)?;
+        self.prune();
         Ok(version)
+    }
+
+    /// Drop the oldest versions beyond the retention limit. Runs after the
+    /// new head is written, and never touches the newest version. A failure
+    /// is logged, not fatal: the push itself succeeded.
+    fn prune(&self) {
+        let Some(keep) = self.c.keep else { return };
+        let versions = self.c.list_versions(self.name);
+        let excess = versions.len().saturating_sub(keep.max(1));
+        let dir = self.c.versions_dir.join(self.name);
+        for v in &versions[..excess] {
+            let removed = std::fs::remove_file(dir.join(v.to_string()));
+            let _ = std::fs::remove_file(dir.join(format!("{v}.meta.json")));
+            match removed {
+                Ok(()) => metrics::counter!("terrarium_state_versions_pruned_total", "workspace" => self.name.to_string()).increment(1),
+                Err(e) => tracing::warn!("Failed to prune v{v} of {}: {e}", self.name),
+            }
+        }
+    }
+
+    /// Make version `from` current again, as a new version.
+    ///
+    /// History is never rewritten: the old state is pushed anew. Its
+    /// `serial` is set one above the current state's, so Terraform clients
+    /// accept it as newer and the stale-push check lets it through.
+    pub fn restore(&self, from: u32, user: &str) -> Result<u32, RestoreError> {
+        let old = self.c.get_version(self.name, from).map_err(RestoreError::Io)?.ok_or(RestoreError::NotFound)?;
+        let current = self.c.get(self.name).map_err(RestoreError::Io)?;
+        let blob = match (current.as_deref().map(StateHeader::parse).and_then(|h| h.serial), serde_json::from_slice::<serde_json::Value>(&old)) {
+            (Some(serial), Ok(mut state)) if state.get("serial").is_some_and(|s| s.is_u64()) => {
+                state["serial"] = (serial + 1).into();
+                serde_json::to_vec_pretty(&state).map_err(|e| RestoreError::Io(std::io::Error::other(e)))?
+            }
+            _ => old,
+        };
+        self.insert(&blob, user, Some(from)).map_err(RestoreError::Io)
     }
 
     pub fn remove(&self) {
@@ -568,6 +635,61 @@ pub async fn put_state(
     StatusCode::OK.into_response()
 }
 
+#[derive(serde::Deserialize)]
+#[allow(non_snake_case)]
+pub struct RestoreQuery {
+    pub version: u32,
+    /// Lock ID, when the workspace is locked by the caller.
+    pub ID: Option<String>,
+}
+
+/// `POST /restore/{name}?version=N` — make an older version current again.
+///
+/// Works on deleted workspaces too (history outlives the head). Respects
+/// locks and archiving like a push.
+pub async fn restore_state(
+    State(app): State<AppState>,
+    Path(name): Path<String>,
+    Query(q): Query<RestoreQuery>,
+    AuthUser(user): AuthUser,
+) -> axum::response::Response {
+    use axum::response::IntoResponse as _;
+    if let Err(status) = validate_name(&name) {
+        return status.into_response();
+    }
+    tracing::info!("⏪ {} restoring {name} to v{}", user.username, q.version);
+
+    let outcome = app.state.write(&name, |w| {
+        if app.state.is_archived(&name) {
+            return Err(("forbidden", StatusCode::FORBIDDEN, format!("{name} is archived; unarchive it first.\n")));
+        }
+        if !lock_permits(&app, &name, q.ID.as_deref()) {
+            return Err(("locked", StatusCode::LOCKED, format!("{name} is locked; wait for the lock or release it first.\n")));
+        }
+        w.restore(q.version, &user.username).map_err(|e| match e {
+            RestoreError::NotFound => ("not_found", StatusCode::NOT_FOUND, format!("{name} has no version {}.\n", q.version)),
+            RestoreError::Io(e) => {
+                tracing::error!("💥 Failed to restore {name} to v{}: {e}", q.version);
+                ("error", StatusCode::INTERNAL_SERVER_ERROR, String::new())
+            }
+        })
+    });
+    let version = match outcome {
+        Ok(v) => v,
+        Err((result, status, message)) => {
+            metrics::counter!("terrarium_state_restores_total", "workspace" => name.clone(), "result" => result).increment(1);
+            return (status, message).into_response();
+        }
+    };
+    metrics::counter!("terrarium_state_restores_total", "workspace" => name.clone(), "result" => "ok").increment(1);
+
+    if let Ok(Some(blob)) = app.state.get(&name) {
+        crate::policy::spawn_state_lint(app.policies.clone(), app.violations.clone(), name.clone(), blob, user.username.clone(), Some(version));
+    }
+    app.webhooks.fire("state.restore", &name, Some(version), &user.username).await;
+    Json(serde_json::json!({ "version": version, "restored_from": q.version })).into_response()
+}
+
 /// Delete terraform state via DELETE
 pub async fn delete_state(
     State(app): State<AppState>,
@@ -659,6 +781,44 @@ mod tests {
         // Not Terraform state on either side: nothing to judge.
         assert_eq!(StateHeader::parse(b"{}").refuses(&h(1, "a")), None);
         assert_eq!(current.refuses(&StateHeader::parse(b"not json")), None);
+    }
+
+    #[test]
+    fn retention_keeps_newest_versions() {
+        let (c, base) = tmp_container();
+        let c = c.keep_versions(Some(3));
+        for i in 0..5 {
+            c.write("ws", |w| w.insert(format!("v{i}").as_bytes(), "ci", None)).unwrap();
+        }
+        assert_eq!(c.list_versions("ws"), vec![3, 4, 5]);
+        assert!(c.version_meta("ws", 2).is_none(), "pruned version's metadata must go too");
+        // Numbering continues; pruning never reuses a version number.
+        assert_eq!(c.write("ws", |w| w.insert(b"v5", "ci", None)).unwrap(), 6);
+        let _ = std::fs::remove_dir_all(base);
+    }
+
+    #[test]
+    fn restore_pushes_old_version_with_next_serial() {
+        let (c, base) = tmp_container();
+        let state = |serial: u64, marker: &str| format!(r#"{{"version":4,"serial":{serial},"lineage":"l","marker":"{marker}","resources":[],"outputs":{{}}}}"#);
+        c.write("ws", |w| w.insert(state(1, "old").as_bytes(), "alice", None)).unwrap();
+        c.write("ws", |w| w.insert(state(2, "new").as_bytes(), "alice", None)).unwrap();
+
+        let v = c.write("ws", |w| w.restore(1, "bob")).unwrap();
+        assert_eq!(v, 3);
+        let head: serde_json::Value = serde_json::from_slice(&c.get("ws").unwrap().unwrap()).unwrap();
+        assert_eq!(head["marker"], "old");
+        assert_eq!(head["serial"], 3, "serial must move past the current one");
+        let meta = c.version_meta("ws", 3).unwrap();
+        assert_eq!((meta.user.as_str(), meta.restored_from), ("bob", Some(1)));
+
+        assert!(matches!(c.write("ws", |w| w.restore(42, "bob")), Err(RestoreError::NotFound)));
+
+        // A deleted workspace can be brought back from its history.
+        c.write("ws", |w| w.remove());
+        c.write("ws", |w| w.restore(2, "bob")).unwrap();
+        assert!(c.get("ws").unwrap().is_some());
+        let _ = std::fs::remove_dir_all(base);
     }
 
     #[test]

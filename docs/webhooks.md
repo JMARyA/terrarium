@@ -21,6 +21,7 @@ terra remote webhook rotate-secret <id>
 | `state.push` | A new state version is stored (`version` is set) |
 | `state.delete` | A state is deleted |
 | `state.archive` / `state.unarchive` | A state is archived or unarchived |
+| `state.restore` | An older version was made current again; `version` is the new version |
 | `lock.acquire` | A lock is acquired |
 | `lock.release` | A lock is released |
 | `lock.expire` | A lock outlived `TERRARIUM_LOCK_TTL` and was taken over; `user` is who took it over |

@@ -623,7 +623,7 @@ async fn serve(tofu_binary: Option<TofuBinary>) {
         observability::init();
     }
     let state = AppState {
-        state: StateContainer::new(data.join("state"), data.join("versions")),
+        state: StateContainer::new(data.join("state"), data.join("versions")).keep_versions(state::keep_versions_from_env()),
         locks: LockContainer::new(data.join("locks"), lock_ttl),
         users: authur::UserDB::new(data.join("users").to_str().unwrap()).await,
         webhooks: WebhookStore::new(data.join("webhooks.json"), webhook::NetworkPolicy::from_env()),
@@ -645,6 +645,7 @@ async fn serve(tofu_binary: Option<TofuBinary>) {
         )
         .route("/archive/{*name}", post(state::archive_state).delete(state::unarchive_state))
         .route("/versions/{*name}", get(state::list_versions))
+        .route("/restore/{*name}", post(state::restore_state))
         .route("/lock", get(lock::list_locks))
         .route("/lock/{*name}", post(lock::lock).delete(lock::unlock).fallback(lock::lock_method_compat))
         .route("/user/password", put(user::change_own_password))
@@ -924,6 +925,18 @@ async fn handle_remote_command(remote: cli::RemoteCommand) {
             cli::RemoteStateSubCommand::Archive(args) => {
                 match client.archive_state(&args.name).await {
                     Ok(()) => println!("{} {} {}", "Archived".yellow(), args.name.bold(), "— now read-only".dimmed()),
+                    Err(e) => die(e),
+                }
+            }
+            cli::RemoteStateSubCommand::Restore(args) => {
+                match client.restore_state(&args.name, args.version).await {
+                    Ok(v) => println!(
+                        "{} {} {} {}",
+                        "Restored".green(),
+                        args.name.bold(),
+                        format!("v{}", args.version).cyan(),
+                        format!("— now current as v{v}").dimmed()
+                    ),
                     Err(e) => die(e),
                 }
             }

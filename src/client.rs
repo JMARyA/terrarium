@@ -126,6 +126,26 @@ impl TerrariumClient {
         }
     }
 
+    /// Make `version` current again; returns the new version number.
+    pub async fn restore_state(&self, name: &str, version: u32) -> Result<u32, String> {
+        let resp = self
+            .client
+            .post(format!("{}/restore/{name}?version={version}", self.base_url))
+            .basic_auth(&self.username, Some(&self.password))
+            .send()
+            .await
+            .map_err(|e| e.to_string())?;
+
+        let status = resp.status();
+        if status.is_success() {
+            let body: serde_json::Value = resp.json().await.map_err(|e| e.to_string())?;
+            return body["version"].as_u64().map(|v| v as u32).ok_or_else(|| "malformed response".to_string());
+        }
+        // The server explains refusals (locked, archived, no such version).
+        let text = resp.text().await.unwrap_or_default();
+        Err(if text.trim().is_empty() { format!("Server returned {status}") } else { text.trim().to_string() })
+    }
+
     pub async fn get_state(&self, name: &str, version: Option<u32>) -> Result<bytes::Bytes, String> {
         let url = match version {
             Some(v) => format!("{}/state/{name}?version={v}", self.base_url),

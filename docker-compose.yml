@@ -19,6 +19,8 @@ services:
       # - "TERRARIUM_MIRROR_INTERVAL=86400"
       # Lazy mirror upstream allow-list. Defaults to both registries below.
       # - "TERRARIUM_UPSTREAM_REGISTRIES=registry.terraform.io,registry.opentofu.org"
+      # Keep only the newest N versions per workspace (default: keep all).
+      # - "TERRARIUM_KEEP_VERSIONS=100"
       # Seconds before a stale lock can be taken over (default 7200; 0 = never).
       # - "TERRARIUM_LOCK_TTL=7200"
       # Where webhooks may deliver: public | private (default) | any
