@@ -202,6 +202,18 @@ terra user delete <username>
 terra user list
 ```
 
+### Backups
+
+`terra admin export` writes the whole data directory to one zip; `terra admin import` unpacks it into a fresh one. Like `terra user`, both act on `TERRARIUM_DATA` directly, so run them where the server's data lives (`docker compose exec terrarium /bin/terra admin export /app/backup.zip`).
+
+```shell
+terra admin export backup.zip              # state, history, locks, users, webhooks, policies
+terra admin export backup.zip --registry   # plus provider binaries and docs
+terra admin import backup.zip              # into an empty data directory, server stopped
+```
+
+Exporting while the server runs is safe: every file is written atomically, so each one in the archive is consistent. The archive holds password hashes and webhook signing secrets — it's created `0600`; keep it that way.
+
 ---
 
 ## Client — Remote Operations

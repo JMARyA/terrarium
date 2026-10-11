@@ -41,6 +41,7 @@ pub enum SubCommand {
     // ── Native terrarium commands ──
     Serve(ServeCommand),
     User(UserCommand),
+    Admin(AdminCommand),
     Remote(RemoteCommand),
     Policy(PolicyCommand),
     TerrariumLogin(TerrariumLoginCommand),
@@ -788,6 +789,45 @@ pub struct ChangePassword {
 /// List all users
 #[argh(subcommand, name = "list")]
 pub struct ListUsers {}
+
+#[derive(FromArgs)]
+#[argh(subcommand, name = "admin")]
+/// Back up and restore the server's data directory (server-side admin)
+pub struct AdminCommand {
+    #[argh(subcommand)]
+    pub subcommand: AdminCommands,
+}
+
+#[derive(FromArgs)]
+#[argh(subcommand)]
+pub enum AdminCommands {
+    Export(AdminExport),
+    Import(AdminImport),
+}
+
+#[derive(FromArgs)]
+/// Write the whole data directory (TERRARIUM_DATA) to a zip file
+#[argh(subcommand, name = "export")]
+pub struct AdminExport {
+    /// zip file to write; created 0600, it holds password hashes and secrets
+    #[argh(positional)]
+    pub file: String,
+    /// also include provider binaries and docs from the registry
+    #[argh(switch)]
+    pub registry: bool,
+}
+
+#[derive(FromArgs)]
+/// Unpack an export into the data directory (stop the server first)
+#[argh(subcommand, name = "import")]
+pub struct AdminImport {
+    /// zip file written by `terra admin export`
+    #[argh(positional)]
+    pub file: String,
+    /// overwrite a data directory that already holds terrarium data
+    #[argh(switch)]
+    pub force: bool,
+}
 
 // ── Remote client commands (native terrarium) ─────────────────────────────
 

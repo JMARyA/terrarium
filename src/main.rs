@@ -41,6 +41,7 @@ mod ui;
 mod auth;
 mod observability;
 mod pathguard;
+mod backup;
 pub mod policy;
 mod policy_client;
 mod policy_cmd;
@@ -446,6 +447,25 @@ async fn main() {
 
         // ── Native terrarium commands ──
         cli::SubCommand::Serve(_) => serve(tofu_binary).await,
+
+        cli::SubCommand::Admin(admin) => {
+            let data = data_dir();
+            let (verb, result) = match admin.subcommand {
+                cli::AdminCommands::Export(args) => ("Exported", backup::export(&data, std::path::Path::new(&args.file), args.registry)),
+                cli::AdminCommands::Import(args) => ("Imported", backup::import(&data, std::path::Path::new(&args.file), args.force)),
+            };
+            match result {
+                Ok(s) => println!(
+                    "{} {} files ({} bytes) {} {}",
+                    verb.green(),
+                    s.files,
+                    s.bytes,
+                    "— data directory".dimmed(),
+                    data.display()
+                ),
+                Err(e) => die(e),
+            }
+        }
 
         cli::SubCommand::User(user_command) => {
             let users = authur::UserDB::new(data_dir().join("users").to_str().unwrap()).await;
