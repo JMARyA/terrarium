@@ -126,17 +126,18 @@ See `docs/policies.md`.
 
 ## Web UI
 
-Terrarium serves a small, **read-only** web dashboard from the same server, at the root path (`/`). It's purely informational — a viewer, not a control plane: there are no plan/apply/force-unlock actions. The only things it mutates are your own login session and your own API tokens.
+Terrarium serves a web UI from the same server, at the root path (`/`). It's server-rendered (maud + a vendored htmx, every asset compiled into the binary — no CDN calls) and mostly a viewer: there are no plan/apply actions. Besides your own session and API tokens, it can do exactly two small things to a workspace — **force-unlock** a held lock and **archive/unarchive** — both behind a two-click confirm, and both going through the same handlers as the API, so webhooks and metrics fire as usual.
 
 Open `http://your-server:8080/` and sign in with any user from the user database.
 
 What's there:
 
-- **Workspaces** (`/`) — namespace tree, active locks, archived states
-- **Per workspace** (`/w/{name}`) — lock status, version history with a size trend, registered webhooks, and an **activity log** derived from lock history (who locked the state, for which operation, when)
-- **State view** (`/w/{name}` → a version, or `/graph/{name}?version=N`) — state metadata, resources grouped by type, outputs, and a **dependency graph** rendered as inline SVG (no external assets)
-- **Diff** (`/diff/{name}?from=A&to=B`) — structural diff between any two versions
-- **Tokens** (`/tokens`) — create, list, and revoke your own API tokens
+- **Overview** (`/`) — fleet vitals, an activity timeline across all workspaces, live held locks, and what needs attention (expired locks, policy violations)
+- **Workspace** (`/w/{name}`) — a lifeline of every version, the live lock (with force-unlock), policy findings, webhooks and activity
+- **State** (`/graph/{name}?version=N`) — resources grouped by type with a filter, outputs, metadata, and an explorable **dependency graph** (hover to trace, click to pin)
+- **History** (`/diff/{name}?from=A&to=B`) — pick two versions, get a colour-coded structural diff in place
+- **Policies**, **Registry** with rendered provider docs, **Tokens**, **Help**
+- **Command palette** — press `/` or `Ctrl K` anywhere; `infra/prod@3` jumps to version 3
 
 ### Authentication
 

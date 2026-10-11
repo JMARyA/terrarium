@@ -67,7 +67,13 @@
         craneLib = (crane.mkLib pkgs).overrideToolchain rustToolchain;
 
         commonArgs = {
-          src = craneLib.cleanCargoSource ./.;
+          # Cargo sources plus the web UI assets compiled in with include_bytes!.
+          src = pkgs.lib.cleanSourceWith {
+            src = ./.;
+            filter =
+              path: type:
+              (craneLib.filterCargoSources path type) || (builtins.match ".*/src/ui/static(/.*)?" path != null);
+          };
           strictDeps = true;
 
           OPENSSL_NO_VENDOR = "1";
