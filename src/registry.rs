@@ -104,6 +104,12 @@ impl RegistryStore {
     }
 
     pub fn get_doc_file(&self, ns: &str, tp: &str, ver: &str, rel: &str) -> Option<String> {
+        // `rel` comes straight from the URL of a public page; it must stay
+        // inside this version's docs directory.
+        let safe = [ns, tp, ver].into_iter().chain(rel.split('/')).all(crate::pathguard::is_safe_segment);
+        if !safe {
+            return None;
+        }
         let base = self.docs_dir(ns, tp, ver).join(rel);
         for ext in &[".md", ".mdx"] {
             let mut p = base.clone();

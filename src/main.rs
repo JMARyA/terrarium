@@ -40,6 +40,7 @@ mod statediff;
 mod ui;
 mod auth;
 mod observability;
+mod pathguard;
 pub mod policy;
 mod policy_client;
 mod policy_cmd;
@@ -695,6 +696,7 @@ async fn serve(tofu_binary: Option<TofuBinary>) {
         .route("/help", get(ui::help_page))
         .with_state(state.clone())
         .layer(axum::extract::DefaultBodyLimit::max(max_body_bytes()))
+        .layer(middleware::from_fn(pathguard::reject_unsafe_paths))
         .layer(middleware::from_fn(observability::http_middleware));
 
     if metrics_enabled {
