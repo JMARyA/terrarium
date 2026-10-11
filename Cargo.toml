@@ -22,7 +22,7 @@ argh = "0.1.13"
 chrono = { version = "0.4", features = ["serde"] }
 reqwest = { version = "0.13", default-features = false, features = ["json", "native-tls", "charset", "http2", "system-proxy"] }
 toml = "1.0"
-dirs = "6"
+dirs = "7"
 facet = "0.50.0-rc.5"
 facet-json = "0.50.0-rc.5"
 rediff = "0.50.0-rc.5"
