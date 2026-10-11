@@ -75,6 +75,8 @@ All data is stored under `TERRARIUM_DATA` (`/app` in the container, `./data` on 
 | `users/`        | User database        |
 | `webhooks.json` | Registered webhooks and their signing secrets (`0600`) |
 
+The server listens on `0.0.0.0:8080`; override with `TERRARIUM_LISTEN` (e.g. `127.0.0.1:9000`).
+
 Request bodies (state pushes, provider uploads) are capped at 256 MiB by default. Override with `TERRARIUM_MAX_BODY_BYTES` (in bytes).
 
 ### Observability

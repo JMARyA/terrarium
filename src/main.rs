@@ -739,15 +739,16 @@ async fn serve(tofu_binary: Option<TofuBinary>) {
         });
     }
 
-    let listener = tokio::net::TcpListener::bind("0.0.0.0:8080")
+    let listen = std::env::var("TERRARIUM_LISTEN").unwrap_or_else(|_| "0.0.0.0:8080".to_string());
+    let listener = tokio::net::TcpListener::bind(&listen)
         .await
-        .expect("Failed to bind to port 8080");
+        .unwrap_or_else(|e| panic!("Failed to bind to {listen}: {e}"));
 
     match lock_ttl {
         Some(ttl) => tracing::info!("⏰ Locks expire after {}s (TERRARIUM_LOCK_TTL)", ttl.as_secs()),
         None => tracing::info!("⏰ Lock expiry disabled (TERRARIUM_LOCK_TTL=0)"),
     }
-    tracing::info!("🌱 Starting terra server at :8080");
+    tracing::info!("🌱 Starting terra server at {listen}");
     axum::serve(listener, app).await.unwrap();
 }
 
