@@ -192,11 +192,22 @@ pub(super) fn timeline(events: &[Event], show_ws: bool) -> Markup {
             @for e in events {
                 li {
                     @match &e.kind {
-                        EventKind::Push { version, size, prev } => {
-                            span.node.push { (icon("push")) }
+                        EventKind::Push { version, size, prev, user, restored_from } => {
+                            span.node.push { (icon(if restored_from.is_some() { "history" } else { "push" })) }
                             div.what {
-                                a href={"/graph/" (e.workspace) "?version=" (version)} { b.mono { "v" (version) } }
-                                " pushed"
+                                @if let Some(u) = user { b { (u) } " " }
+                                @match restored_from {
+                                    Some(from) => {
+                                        "restored "
+                                        a href={"/graph/" (e.workspace) "?version=" (from)} { b.mono { "v" (from) } }
+                                        " as "
+                                        a href={"/graph/" (e.workspace) "?version=" (version)} { b.mono { "v" (version) } }
+                                    }
+                                    None => {
+                                        "pushed "
+                                        a href={"/graph/" (e.workspace) "?version=" (version)} { b.mono { "v" (version) } }
+                                    }
+                                }
                                 @if show_ws { " to " a.ws href={"/w/" (e.workspace)} { (e.workspace) } }
                                 " " (delta(*size, *prev))
                             }

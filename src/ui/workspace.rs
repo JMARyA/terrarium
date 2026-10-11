@@ -105,9 +105,6 @@ pub async fn page_html(app: &AppState, user: &str, name: &str) -> Response {
                 section.card {
                     div.card-h { h2 { (icon("history")) "Activity" } }
                     (timeline(&data::events_for(app, name, 25), false))
-                    p.note style="padding:0 16px 14px" {
-                        "Lock entries come from lock history. Pushes made without a lock show up as versions only."
-                    }
                 }
             }
             div.stack {
@@ -185,7 +182,7 @@ fn lifeline(name: &str, versions: &[VersionInfo]) -> Markup {
                             a href={"/graph/" (name) "?version=" (v.v)}
                               class=[(Some(v.v) == current).then_some("current")]
                               style={"height:" (format!("{h:.0}")) "%"}
-                              title={"v" (v.v) " · " (fmt_size(v.size)) @if let Some(at) = v.at { " · " (at.format("%Y-%m-%d %H:%M UTC")) }} {}
+                              title={"v" (v.v) " · " (fmt_size(v.size)) @if let Some(u) = &v.user { " · " (u) } @if let Some(at) = v.at { " · " (at.format("%Y-%m-%d %H:%M UTC")) }} {}
                         }
                     }
                     div.lifeline-axis {

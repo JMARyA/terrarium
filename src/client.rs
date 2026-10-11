@@ -146,20 +146,25 @@ impl TerrariumClient {
         }
     }
 
-    pub async fn list_versions(&self, name: &str) -> Result<Vec<u32>, String> {
+    /// Versions with their metadata. Servers that predate `?detail=true`
+    /// answer with bare numbers, which come back without metadata.
+    pub async fn list_versions(&self, name: &str) -> Result<Vec<crate::state::VersionEntry>, String> {
         let resp = self
             .client
-            .get(format!("{}/versions/{name}", self.base_url))
+            .get(format!("{}/versions/{name}?detail=true", self.base_url))
             .basic_auth(&self.username, Some(&self.password))
             .send()
             .await
             .map_err(|e| e.to_string())?;
 
-        if resp.status().is_success() {
-            resp.json::<Vec<u32>>().await.map_err(|e| e.to_string())
-        } else {
-            Err(format!("Server returned {}", resp.status()))
+        if !resp.status().is_success() {
+            return Err(format!("Server returned {}", resp.status()));
         }
+        let body = resp.bytes().await.map_err(|e| e.to_string())?;
+        if let Ok(numbers) = serde_json::from_slice::<Vec<u32>>(&body) {
+            return Ok(numbers.into_iter().map(|version| crate::state::VersionEntry { version, meta: None }).collect());
+        }
+        serde_json::from_slice(&body).map_err(|e| e.to_string())
     }
 
     pub async fn unlock_state(&self, name: &str) -> Result<LockInfo, String> {

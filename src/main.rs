@@ -837,13 +837,28 @@ async fn handle_remote_command(remote: cli::RemoteCommand) {
                     Ok(versions) if versions.is_empty() => println!("{}", "No versions found".dimmed()),
                     Ok(versions) => {
                         println!("{} {}:", "Versions for".dimmed(), args.name.bold());
-                        let current = versions.iter().max().copied();
-                        for v in &versions {
-                            if Some(*v) == current {
-                                println!("  {} {}", v.to_string().cyan(), "(current)".green().bold());
-                            } else {
-                                println!("  {}", v.to_string().dimmed());
-                            }
+                        let current = versions.iter().map(|e| e.version).max();
+                        for e in &versions {
+                            let label = format!("v{:<4}", e.version);
+                            let label = if Some(e.version) == current { label.cyan().bold() } else { label.normal() };
+                            let detail = match &e.meta {
+                                Some(m) => {
+                                    let when = chrono::DateTime::parse_from_rfc3339(&m.pushed_at)
+                                        .map(|t| t.format("%Y-%m-%d %H:%M").to_string())
+                                        .unwrap_or_else(|_| m.pushed_at.clone());
+                                    let mut d = format!("{when}  {:<12} {:>10}", m.user, format!("{} B", m.size));
+                                    if let Some(s) = m.serial {
+                                        d.push_str(&format!("  serial {s}"));
+                                    }
+                                    if let Some(from) = m.restored_from {
+                                        d.push_str(&format!("  restored from v{from}"));
+                                    }
+                                    d
+                                }
+                                None => "(no metadata)".to_string(),
+                            };
+                            let tag = if Some(e.version) == current { " (current)".green().bold().to_string() } else { String::new() };
+                            println!("  {label} {}{tag}", detail.dimmed());
                         }
                     }
                     Err(e) => die(e),

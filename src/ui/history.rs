@@ -79,6 +79,7 @@ fn picker(name: &str, versions: &[VersionInfo], from: u32, to: u32) -> Markup {
                             th { "version" }
                             th.num { "size" }
                             th.num { "Δ" }
+                            th { "by" }
                             th { "pushed" }
                         } }
                         tbody {
@@ -90,6 +91,10 @@ fn picker(name: &str, versions: &[VersionInfo], from: u32, to: u32) -> Markup {
                                     td { a.vlabel href={"/graph/" (name) "?version=" (v.v)} { "v" (v.v) } }
                                     td.num { (fmt_size(v.size)) }
                                     td.num { (delta(v.size, prev)) }
+                                    td.small {
+                                        (v.user.as_deref().unwrap_or("—"))
+                                        @if let Some(from) = v.restored_from { span.faint { " ↺v" (from) } }
+                                    }
                                     td.small.muted { (opt_time(v.at)) }
                                 }
                             }

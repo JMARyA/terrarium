@@ -10,22 +10,37 @@ use crate::lock::LockInfo;
 pub struct VersionInfo {
     pub v: u32,
     pub size: u64,
-    /// When the version was pushed (file mtime).
+    /// When the version was pushed.
     pub at: Option<DateTime<Utc>>,
+    /// Who pushed it; unknown for versions that predate version metadata.
+    pub user: Option<String>,
+    pub restored_from: Option<u32>,
 }
 
-/// Every version of `name`, oldest first.
+/// Every version of `name`, oldest first. Uses the recorded metadata, and
+/// the file's size and mtime for versions written before it existed.
 pub fn versions(app: &AppState, name: &str) -> Vec<VersionInfo> {
     let dir = app.state.versions_dir.join(name);
     app.state
         .list_versions(name)
         .into_iter()
-        .map(|v| {
-            let meta = std::fs::metadata(dir.join(v.to_string())).ok();
-            VersionInfo {
+        .map(|v| match app.state.version_meta(name, v) {
+            Some(m) => VersionInfo {
                 v,
-                size: meta.as_ref().map(|m| m.len()).unwrap_or(0),
-                at: meta.and_then(|m| m.modified().ok()).map(DateTime::<Utc>::from),
+                size: m.size,
+                at: parse_time(Some(&m.pushed_at)),
+                user: Some(m.user),
+                restored_from: m.restored_from,
+            },
+            None => {
+                let meta = std::fs::metadata(dir.join(v.to_string())).ok();
+                VersionInfo {
+                    v,
+                    size: meta.as_ref().map(|m| m.len()).unwrap_or(0),
+                    at: meta.and_then(|m| m.modified().ok()).map(DateTime::<Utc>::from),
+                    user: None,
+                    restored_from: None,
+                }
             }
         })
         .collect()
@@ -95,7 +110,7 @@ pub fn plural(n: usize) -> &'static str {
 // ── Activity ────────────────────────────────────────────────────────────
 
 pub enum EventKind {
-    Push { version: u32, size: u64, prev: Option<u64> },
+    Push { version: u32, size: u64, prev: Option<u64>, user: Option<String>, restored_from: Option<u32> },
     Lock { who: String, operation: Option<String> },
 }
 
@@ -107,8 +122,7 @@ pub struct Event {
 
 /// Pushes and lock acquisitions for one workspace, newest first.
 ///
-/// Releases aren't recorded anywhere, so they don't appear; neither does who
-/// pushed, which the version files don't store.
+/// Releases aren't recorded anywhere, so they don't appear.
 pub fn events_for(app: &AppState, name: &str, limit: usize) -> Vec<Event> {
     let mut events = Vec::new();
     let versions = versions(app, name);
@@ -119,7 +133,7 @@ pub fn events_for(app: &AppState, name: &str, limit: usize) -> Vec<Event> {
         events.push(Event {
             workspace: name.to_string(),
             at,
-            kind: EventKind::Push { version: v.v, size: v.size, prev },
+            kind: EventKind::Push { version: v.v, size: v.size, prev, user: v.user.clone(), restored_from: v.restored_from },
         });
     }
     for info in app.locks.history(name).into_iter().take(limit) {

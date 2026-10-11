@@ -17,6 +17,44 @@ pub struct StateContainer {
     writers: Arc<DashMap<String, Arc<Mutex<()>>>>,
 }
 
+/// What terrarium records about a pushed version, stored next to it as
+/// `versions/{name}/{N}.meta.json`. Versions written before this existed have
+/// no metadata; readers fall back to the file's size and mtime.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct VersionMeta {
+    /// Who pushed it (the authenticated username).
+    pub user: String,
+    /// RFC 3339, server clock.
+    pub pushed_at: String,
+    pub size: u64,
+    /// Hex SHA-256 of the state blob.
+    pub sha256: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub serial: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lineage: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub terraform_version: Option<String>,
+    /// Set when this version was created by restoring an older one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub restored_from: Option<u32>,
+}
+
+/// The few top-level fields of a Terraform state terrarium cares about.
+/// Anything that isn't Terraform state JSON simply has none of them.
+#[derive(Debug, Default, serde::Deserialize)]
+pub struct StateHeader {
+    pub serial: Option<u64>,
+    pub lineage: Option<String>,
+    pub terraform_version: Option<String>,
+}
+
+impl StateHeader {
+    pub fn parse(blob: &[u8]) -> Self {
+        serde_json::from_slice(blob).unwrap_or_default()
+    }
+}
+
 /// Read a file, mapping "does not exist" to `None` and any other failure to
 /// an error, so an unreadable state is never mistaken for an absent one.
 fn read_opt(path: &FsPath) -> std::io::Result<Option<Vec<u8>>> {
@@ -40,6 +78,11 @@ impl StateContainer {
 
     pub fn get_version(&self, name: &str, version: u32) -> std::io::Result<Option<Vec<u8>>> {
         read_opt(&self.versions_dir.join(name).join(version.to_string()))
+    }
+
+    pub fn version_meta(&self, name: &str, version: u32) -> Option<VersionMeta> {
+        let raw = std::fs::read(self.versions_dir.join(name).join(format!("{version}.meta.json"))).ok()?;
+        serde_json::from_slice(&raw).ok()
     }
 
     pub fn list_versions(&self, name: &str) -> Vec<u32> {
@@ -132,12 +175,29 @@ impl Writer<'_> {
     /// an existing state or version file. The versioned copy is written first,
     /// so the head is only advanced once the history entry is durable.
     ///
-    /// Returns the version that was written.
-    pub fn insert(&self, state: &[u8]) -> std::io::Result<u32> {
+    /// Alongside the blob it records a [`VersionMeta`] — who pushed it, when,
+    /// and the state's serial and lineage. Returns the version written.
+    pub fn insert(&self, state: &[u8], user: &str, restored_from: Option<u32>) -> std::io::Result<u32> {
+        use sha2::Digest as _;
+
         let c = self.c;
         let version = c.list_versions(self.name).last().copied().unwrap_or(0) + 1;
-        let version_path = c.versions_dir.join(self.name).join(version.to_string());
-        atomic_write(&version_path, state)?;
+        let dir = c.versions_dir.join(self.name);
+        atomic_write(&dir.join(version.to_string()), state)?;
+
+        let header = StateHeader::parse(state);
+        let meta = VersionMeta {
+            user: user.to_string(),
+            pushed_at: chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+            size: state.len() as u64,
+            sha256: sha2::Sha256::digest(state).iter().map(|b| format!("{b:02x}")).collect(),
+            serial: header.serial,
+            lineage: header.lineage,
+            terraform_version: header.terraform_version,
+            restored_from,
+        };
+        let json = serde_json::to_vec(&meta).map_err(std::io::Error::other)?;
+        atomic_write(&dir.join(format!("{version}.meta.json")), &json)?;
 
         atomic_write(&c.dir.join(self.name), state)?;
         Ok(version)
@@ -248,6 +308,22 @@ pub struct ListQuery {
 }
 
 #[derive(serde::Deserialize)]
+pub struct VersionsQuery {
+    /// Return each version with its metadata instead of bare numbers.
+    #[serde(default)]
+    pub detail: bool,
+}
+
+/// One entry of `GET /versions/{name}?detail=true`.
+#[derive(serde::Serialize, serde::Deserialize)]
+pub struct VersionEntry {
+    pub version: u32,
+    /// Absent for versions pushed before metadata was recorded.
+    #[serde(flatten)]
+    pub meta: Option<VersionMeta>,
+}
+
+#[derive(serde::Deserialize)]
 pub struct GetQuery {
     pub version: Option<u32>,
 }
@@ -270,14 +346,24 @@ pub async fn list_states(
     Ok(Json(app.state.list(q.prefix.as_deref(), q.archived.unwrap_or(false))))
 }
 
-/// List all versions for a state
+/// List all versions for a state; `?detail=true` adds who pushed each and when.
 pub async fn list_versions(
     State(app): State<AppState>,
     Path(name): Path<String>,
+    Query(q): Query<VersionsQuery>,
     _auth: AuthUser,
-) -> Result<Json<Vec<u32>>, StatusCode> {
+) -> Result<axum::response::Response, StatusCode> {
+    use axum::response::IntoResponse as _;
     validate_name(&name)?;
-    Ok(Json(app.state.list_versions(&name)))
+    let versions = app.state.list_versions(&name);
+    if !q.detail {
+        return Ok(Json(versions).into_response());
+    }
+    let entries: Vec<VersionEntry> = versions
+        .into_iter()
+        .map(|v| VersionEntry { version: v, meta: app.state.version_meta(&name, v) })
+        .collect();
+    Ok(Json(entries).into_response())
 }
 
 /// Unarchive a state — removes the read-only marker
@@ -386,7 +472,7 @@ pub async fn put_state(
             tracing::warn!("Failed to read previous state for {name}: {e}");
             None
         });
-        match w.insert(&body) {
+        match w.insert(&body, &user.username, None) {
             Ok(version) => Ok((version, previous)),
             Err(e) => {
                 tracing::error!("💥 Failed to persist state for {name}: {e}");
@@ -490,8 +576,8 @@ mod tests {
     #[test]
     fn insert_persists_head_and_version() {
         let (c, base) = tmp_container();
-        c.write("infra/prod", |w| w.insert(b"v1")).unwrap();
-        c.write("infra/prod", |w| w.insert(b"v2")).unwrap();
+        c.write("infra/prod", |w| w.insert(b"v1", "alice", None)).unwrap();
+        c.write("infra/prod", |w| w.insert(b"v2", "alice", None)).unwrap();
 
         assert_eq!(c.get("infra/prod").unwrap().as_deref(), Some(&b"v2"[..]));
         assert_eq!(c.list_versions("infra/prod"), vec![1, 2]);
@@ -504,12 +590,31 @@ mod tests {
     }
 
     #[test]
+    fn insert_records_version_metadata() {
+        let (c, base) = tmp_container();
+        let state = br#"{"version":4,"terraform_version":"1.9.0","serial":7,"lineage":"abc","outputs":{},"resources":[]}"#;
+        let v = c.write("ws", |w| w.insert(state, "alice", None)).unwrap();
+        let meta = c.version_meta("ws", v).unwrap();
+        assert_eq!(meta.user, "alice");
+        assert_eq!(meta.serial, Some(7));
+        assert_eq!(meta.lineage.as_deref(), Some("abc"));
+        assert_eq!(meta.size, state.len() as u64);
+        assert_eq!(meta.sha256.len(), 64);
+        // The sidecar must not show up as a version.
+        assert_eq!(c.list_versions("ws"), vec![1]);
+        // Legacy versions without a sidecar have no metadata.
+        std::fs::write(c.versions_dir.join("ws").join("2"), b"old").unwrap();
+        assert_eq!(c.version_meta("ws", 2), None);
+        let _ = std::fs::remove_dir_all(base);
+    }
+
+    #[test]
     fn concurrent_inserts_get_distinct_versions() {
         let (c, base) = tmp_container();
         let handles: Vec<_> = (0..16)
             .map(|i| {
                 let c = c.clone();
-                std::thread::spawn(move || c.write("app", |w| w.insert(format!("v{i}").as_bytes())).unwrap())
+                std::thread::spawn(move || c.write("app", |w| w.insert(format!("v{i}").as_bytes(), "ci", None)).unwrap())
             })
             .collect();
         let mut written: Vec<u32> = handles.into_iter().map(|h| h.join().unwrap()).collect();
@@ -534,7 +639,7 @@ mod tests {
     #[test]
     fn atomic_write_leaves_no_temp_files() {
         let (c, base) = tmp_container();
-        c.write("app", |w| w.insert(b"data")).unwrap();
+        c.write("app", |w| w.insert(b"data", "ci", None)).unwrap();
         // No leftover ".*.tmp" files in the state dir after a successful write.
         let leftovers: Vec<_> = std::fs::read_dir(&c.dir)
             .unwrap()

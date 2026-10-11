@@ -70,7 +70,7 @@ All data is stored under `TERRARIUM_DATA` (`/app` in the container, `./data` on 
 | Path            | Contents             |
 | --------------- | -------------------- |
 | `state/`        | Current state blobs  |
-| `versions/`     | Full version history |
+| `versions/`     | Full version history; `{N}.meta.json` beside each version records who pushed it, when, its serial and lineage |
 | `locks/`        | Persisted lock files |
 | `users/`        | User database        |
 | `webhooks.json` | Registered webhooks and their signing secrets (`0600`) |
@@ -345,7 +345,7 @@ All endpoints require authentication — either HTTP Basic Auth or an `Authoriza
 | `GET`    | `/state/{name}`         | Get current state (`?version=N` for history)               |
 | `POST`   | `/state/{name}`         | Push state (`?ID=<lock-id>` if locked)                     |
 | `DELETE` | `/state/{name}`         | Delete state                                               |
-| `GET`    | `/versions/{name}`      | List version numbers for a state                           |
+| `GET`    | `/versions/{name}`      | List version numbers (`?detail=true`: with who pushed each, when, serial) |
 | `POST`   | `/archive/{name}`       | Archive a state (mark read-only)                           |
 | `DELETE` | `/archive/{name}`       | Unarchive a state (re-enable writes)                       |
 | `GET`    | `/lock`                 | List all active locks                                      |
