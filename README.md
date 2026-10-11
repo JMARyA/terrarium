@@ -134,10 +134,10 @@ Open `http://your-server:8080/` and sign in with any user from the user database
 
 What's there:
 
-- **Overview** (`/`) — fleet vitals, an activity timeline across all workspaces, live held locks, and what needs attention (expired locks, policy violations)
+- **Overview** (`/`) — fleet vitals, an activity timeline across all workspaces (who pushed what), live held locks, what needs attention (expired locks, policy violations), and workspaces that have gone quiet (no push in 90 days)
 - **Workspace** (`/w/{name}`) — a lifeline of every version, the live lock (with force-unlock), policy findings, webhooks and activity
-- **State** (`/graph/{name}?version=N`) — resources grouped by type with a filter, outputs, metadata, and an explorable **dependency graph** (hover to trace, click to pin)
-- **History** (`/diff/{name}?from=A&to=B`) — pick two versions, get a colour-coded structural diff in place
+- **State** (`/graph/{name}?version=N`) — resources grouped by type with a filter, outputs, metadata, an explorable **dependency graph** (hover to trace, click to pin), and an **attribute inspector** for any resource. Values Terraform marks sensitive, and values under secret-looking keys (`password`, `token`, `private_key`, …), are masked server-side
+- **History** (`/diff/{name}?from=A&to=B`) — pick two versions, get a colour-coded structural diff of resources and outputs in place (sensitive output values are never shown)
 - **Policies**, **Registry** with rendered provider docs, **Tokens**, **Help**
 - **Command palette** — press `/` or `Ctrl K` anywhere; `infra/prod@3` jumps to version 3
 
