@@ -250,13 +250,18 @@ fn validate_name(name: &str) -> Result<(), StatusCode> {
 /// can see who holds the lock without asking around.
 async fn acquire(app: &AppState, name: &str, info: LockInfo, user: &str) -> Response {
     let operation = crate::observability::lock_operation(info.Operation.as_ref());
-    if app.state.is_archived(name) {
+    // Under the workspace's write guard, so a lock can never be granted while
+    // a push is between its lock check and its write.
+    let acquired = app.state.write(name, |_| {
+        (!app.state.is_archived(name)).then(|| app.locks.try_acquire(name, info))
+    });
+    let Some(acquired) = acquired else {
         tracing::info!("📦 State {name} is archived, rejecting lock");
         metrics::counter!("terrarium_lock_acquires_total", "workspace" => name.to_string(), "result" => "forbidden", "operation" => operation).increment(1);
         return StatusCode::FORBIDDEN.into_response();
-    }
+    };
 
-    let lock = match app.locks.try_acquire(name, info) {
+    let lock = match acquired {
         Acquire::Held(holder) => {
             tracing::info!("🔒 Already existing lock for {name}");
             metrics::counter!("terrarium_lock_acquires_total", "workspace" => name.to_string(), "result" => "conflict", "operation" => operation).increment(1);

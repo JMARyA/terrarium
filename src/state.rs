@@ -13,9 +13,7 @@ use crate::AppState;
 pub struct StateContainer {
     pub dir: PathBuf,
     pub versions_dir: PathBuf,
-    /// Per-workspace write guards. Allocating the next version number and
-    /// writing it must happen as one step, or two concurrent pushes both claim
-    /// version N and one history entry is silently overwritten.
+    /// Per-workspace guards; see [`StateContainer::write`].
     writers: Arc<DashMap<String, Arc<Mutex<()>>>>,
 }
 
@@ -58,58 +56,21 @@ impl StateContainer {
         versions
     }
 
-    pub fn remove(&self, name: &str) {
-        let _ = std::fs::remove_file(self.dir.join(name));
-        let _ = std::fs::remove_file(self.dir.join(format!("{name}.archived")));
-        // version history is intentionally kept
-    }
-
-    /// Persist a new state revision.
+    /// Run `f` with exclusive access to one workspace.
     ///
-    /// Returns an [`std::io::Error`] instead of panicking so the caller can
-    /// surface a `500` and record a metric when the underlying filesystem
-    /// fails (e.g. the data volume is full). Both writes are atomic (temp file
-    /// + rename), so a failed or partial write can never truncate or corrupt
-    /// an existing state or version file. The versioned copy is written first,
-    /// so the head is only advanced once the history entry is durable.
-    ///
-    /// Writes to one workspace are serialized, so every push gets its own
-    /// version number. Returns the version that was written.
-    pub fn insert(&self, name: &str, state: Vec<u8>) -> std::io::Result<u32> {
+    /// Everything that checks a workspace and then changes it — a push
+    /// verifying the lock before writing, a lock request checking the archive
+    /// marker, allocating the next version number — happens inside this
+    /// guard, so no other writer can slip in between the check and the write.
+    /// `f` must not block on anything but the filesystem.
+    pub fn write<R>(&self, name: &str, f: impl FnOnce(Writer<'_>) -> R) -> R {
         let guard = self.writers.entry(name.to_string()).or_default().clone();
         let _held = guard.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-
-        let version = self.list_versions(name).last().copied().unwrap_or(0) + 1;
-        let version_path = self.versions_dir.join(name).join(version.to_string());
-        atomic_write(&version_path, &state)?;
-
-        let path = self.dir.join(name);
-        atomic_write(&path, &state)?;
-        Ok(version)
+        f(Writer { c: self, name })
     }
 
     pub fn is_archived(&self, name: &str) -> bool {
         self.dir.join(format!("{name}.archived")).exists()
-    }
-
-    pub fn archive(&self, name: &str) -> bool {
-        if !self.dir.join(name).exists() {
-            return false;
-        }
-        let sidecar = self.dir.join(format!("{name}.archived"));
-        if let Some(parent) = sidecar.parent() {
-            let _ = std::fs::create_dir_all(parent);
-        }
-        std::fs::write(sidecar, b"").is_ok()
-    }
-
-    pub fn unarchive(&self, name: &str) -> bool {
-        let sidecar = self.dir.join(format!("{name}.archived"));
-        if sidecar.exists() {
-            std::fs::remove_file(sidecar).is_ok()
-        } else {
-            false
-        }
     }
 
     pub fn list(&self, prefix: Option<&str>, archived: bool) -> Vec<String> {
@@ -151,6 +112,60 @@ impl StateContainer {
                     }
                 }
             }
+        }
+    }
+}
+
+/// Exclusive access to one workspace, handed out by [`StateContainer::write`].
+pub struct Writer<'a> {
+    c: &'a StateContainer,
+    name: &'a str,
+}
+
+impl Writer<'_> {
+    /// Persist a new state revision.
+    ///
+    /// Returns an [`std::io::Error`] instead of panicking so the caller can
+    /// surface a `500` and record a metric when the underlying filesystem
+    /// fails (e.g. the data volume is full). Both writes are atomic (temp file
+    /// + rename), so a failed or partial write can never truncate or corrupt
+    /// an existing state or version file. The versioned copy is written first,
+    /// so the head is only advanced once the history entry is durable.
+    ///
+    /// Returns the version that was written.
+    pub fn insert(&self, state: &[u8]) -> std::io::Result<u32> {
+        let c = self.c;
+        let version = c.list_versions(self.name).last().copied().unwrap_or(0) + 1;
+        let version_path = c.versions_dir.join(self.name).join(version.to_string());
+        atomic_write(&version_path, state)?;
+
+        atomic_write(&c.dir.join(self.name), state)?;
+        Ok(version)
+    }
+
+    pub fn remove(&self) {
+        let _ = std::fs::remove_file(self.c.dir.join(self.name));
+        let _ = std::fs::remove_file(self.c.dir.join(format!("{}.archived", self.name)));
+        // version history is intentionally kept
+    }
+
+    pub fn archive(&self) -> bool {
+        if !self.c.dir.join(self.name).exists() {
+            return false;
+        }
+        let sidecar = self.c.dir.join(format!("{}.archived", self.name));
+        if let Some(parent) = sidecar.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        std::fs::write(sidecar, b"").is_ok()
+    }
+
+    pub fn unarchive(&self) -> bool {
+        let sidecar = self.c.dir.join(format!("{}.archived", self.name));
+        if sidecar.exists() {
+            std::fs::remove_file(sidecar).is_ok()
+        } else {
+            false
         }
     }
 }
@@ -273,7 +288,7 @@ pub async fn unarchive_state(
 ) -> Result<StatusCode, StatusCode> {
     validate_name(&name)?;
     tracing::info!("📬 Unarchiving state {name}");
-    if app.state.unarchive(&name) {
+    if app.state.write(&name, |w| w.unarchive()) {
         metrics::counter!("terrarium_state_archives_total", "workspace" => name.clone(), "action" => "unarchive", "result" => "ok").increment(1);
         app.webhooks.fire("state.unarchive", &name, None, &user.username).await;
         Ok(StatusCode::OK)
@@ -291,7 +306,7 @@ pub async fn archive_state(
 ) -> Result<StatusCode, StatusCode> {
     validate_name(&name)?;
     tracing::info!("📦 Archiving state {name}");
-    if app.state.archive(&name) {
+    if app.state.write(&name, |w| w.archive()) {
         metrics::counter!("terrarium_state_archives_total", "workspace" => name.clone(), "action" => "archive", "result" => "ok").increment(1);
         app.webhooks.fire("state.archive", &name, None, &user.username).await;
         Ok(StatusCode::OK)
@@ -357,37 +372,44 @@ pub async fn put_state(
     validate_name(&name)?;
     tracing::info!("✍️ Trying to update state for {name}");
 
-    if app.state.is_archived(&name) {
-        tracing::info!("📦 State {name} is archived, rejecting write");
-        metrics::counter!("terrarium_state_pushes_total", "workspace" => name.clone(), "result" => "forbidden").increment(1);
-        return Err(StatusCode::FORBIDDEN);
-    }
-
-    if !lock_permits(&app, &name, lock.ID.as_deref()) {
-        metrics::counter!("terrarium_state_pushes_total", "workspace" => name.clone(), "result" => "locked").increment(1);
-        return Err(StatusCode::LOCKED);
-    }
-
-    // Only feeds metrics, so an unreadable previous state is not fatal here.
-    let previous = app.state.get(&name).unwrap_or_else(|e| {
-        tracing::warn!("Failed to read previous state for {name}: {e}");
-        None
+    // Archive, lock and write are checked and applied under one guard, so a
+    // lock acquired concurrently can't land between the check and the write.
+    let outcome = app.state.write(&name, |w| {
+        if app.state.is_archived(&name) {
+            return Err(("forbidden", StatusCode::FORBIDDEN));
+        }
+        if !lock_permits(&app, &name, lock.ID.as_deref()) {
+            return Err(("locked", StatusCode::LOCKED));
+        }
+        // Only feeds metrics, so an unreadable previous state is not fatal here.
+        let previous = app.state.get(&name).unwrap_or_else(|e| {
+            tracing::warn!("Failed to read previous state for {name}: {e}");
+            None
+        });
+        match w.insert(&body) {
+            Ok(version) => Ok((version, previous)),
+            Err(e) => {
+                tracing::error!("💥 Failed to persist state for {name}: {e}");
+                metrics::counter!("terrarium_state_write_errors_total", "workspace" => name.clone()).increment(1);
+                Err(("error", StatusCode::INTERNAL_SERVER_ERROR))
+            }
+        }
     });
+    let (version, previous) = match outcome {
+        Ok(ok) => ok,
+        Err((result, status)) => {
+            if status == StatusCode::FORBIDDEN {
+                tracing::info!("📦 State {name} is archived, rejecting write");
+            }
+            metrics::counter!("terrarium_state_pushes_total", "workspace" => name.clone(), "result" => result).increment(1);
+            return Err(status);
+        }
+    };
     let existed = previous.is_some();
     let before_counts = previous.as_deref().and_then(crate::observability::state_counts);
     let before_len = previous.as_ref().map(|b| b.len()).unwrap_or(0);
     let body_len = body.len();
     let after_counts = crate::observability::state_counts(&body);
-
-    let version = match app.state.insert(&name, body.to_vec()) {
-        Ok(version) => version,
-        Err(e) => {
-            tracing::error!("💥 Failed to persist state for {name}: {e}");
-            metrics::counter!("terrarium_state_write_errors_total", "workspace" => name.clone()).increment(1);
-            metrics::counter!("terrarium_state_pushes_total", "workspace" => name.clone(), "result" => "error").increment(1);
-            return Err(StatusCode::INTERNAL_SERVER_ERROR);
-        }
-    };
     metrics::counter!("terrarium_state_pushes_total", "workspace" => name.clone(), "result" => "ok").increment(1);
     metrics::counter!("terrarium_state_version_creations_total", "workspace" => name.clone()).increment(1);
     metrics::histogram!("terrarium_state_push_bytes", "workspace" => name.clone()).record(body_len as f64);
@@ -430,12 +452,17 @@ pub async fn delete_state(
     validate_name(&name)?;
     tracing::info!("♻️ Trying to delete state for {name}");
 
-    if !lock_permits(&app, &name, lock.ID.as_deref()) {
+    let permitted = app.state.write(&name, |w| {
+        let ok = lock_permits(&app, &name, lock.ID.as_deref());
+        if ok {
+            w.remove();
+        }
+        ok
+    });
+    if !permitted {
         metrics::counter!("terrarium_state_deletions_total", "workspace" => name.clone(), "result" => "locked").increment(1);
         return Err(StatusCode::LOCKED);
     }
-
-    app.state.remove(&name);
     // A violation report describes state that no longer exists.
     app.violations.clear(&name);
     metrics::counter!("terrarium_state_deletions_total", "workspace" => name.clone(), "result" => "ok").increment(1);
@@ -463,8 +490,8 @@ mod tests {
     #[test]
     fn insert_persists_head_and_version() {
         let (c, base) = tmp_container();
-        c.insert("infra/prod", b"v1".to_vec()).unwrap();
-        c.insert("infra/prod", b"v2".to_vec()).unwrap();
+        c.write("infra/prod", |w| w.insert(b"v1")).unwrap();
+        c.write("infra/prod", |w| w.insert(b"v2")).unwrap();
 
         assert_eq!(c.get("infra/prod").unwrap().as_deref(), Some(&b"v2"[..]));
         assert_eq!(c.list_versions("infra/prod"), vec![1, 2]);
@@ -482,7 +509,7 @@ mod tests {
         let handles: Vec<_> = (0..16)
             .map(|i| {
                 let c = c.clone();
-                std::thread::spawn(move || c.insert("app", format!("v{i}").into_bytes()).unwrap())
+                std::thread::spawn(move || c.write("app", |w| w.insert(format!("v{i}").as_bytes())).unwrap())
             })
             .collect();
         let mut written: Vec<u32> = handles.into_iter().map(|h| h.join().unwrap()).collect();
@@ -507,7 +534,7 @@ mod tests {
     #[test]
     fn atomic_write_leaves_no_temp_files() {
         let (c, base) = tmp_container();
-        c.insert("app", b"data".to_vec()).unwrap();
+        c.write("app", |w| w.insert(b"data")).unwrap();
         // No leftover ".*.tmp" files in the state dir after a successful write.
         let leftovers: Vec<_> = std::fs::read_dir(&c.dir)
             .unwrap()
