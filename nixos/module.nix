@@ -89,6 +89,16 @@ in
       '';
     };
 
+    listen = lib.mkOption {
+      type = lib.types.str;
+      default = "0.0.0.0:8080";
+      example = "127.0.0.1:8080";
+      description = ''
+        Address and port the server listens on. Bind to loopback when a
+        reverse proxy on the same host terminates TLS.
+      '';
+    };
+
     maxBodyBytes = lib.mkOption {
       type = lib.types.nullOr lib.types.ints.positive;
       default = null;
@@ -141,6 +151,7 @@ in
         TERRARIUM_DATA = cfg.dataDir;
         TERRARIUM_UPSTREAM_REGISTRIES = lib.concatStringsSep "," cfg.upstreamRegistries;
         TERRARIUM_WEBHOOK_NETWORKS = cfg.webhookNetworks;
+        TERRARIUM_LISTEN = cfg.listen;
         RUST_LOG = "info";
       } // lib.optionalAttrs (cfg.mirrorInterval != null) {
         TERRARIUM_MIRROR_INTERVAL = toString cfg.mirrorInterval;

@@ -12,6 +12,8 @@ services:
     environment:
       - "RUST_LOG=info"
       - "TERRARIUM_DATA=/app"
+      # Listen address inside the container (default 0.0.0.0:8080).
+      # - "TERRARIUM_LISTEN=0.0.0.0:8080"
       # Refresh optional pre-warmed providers every N seconds.
       # 86400 = daily, 3600 = hourly
       # - "TERRARIUM_MIRROR_INTERVAL=86400"
