@@ -34,6 +34,7 @@ pub mod tfstate;
 pub mod user;
 pub mod webhook;
 mod tofu;
+mod interrupt;
 mod terranix;
 mod plan_json;
 mod statediff;
@@ -347,6 +348,7 @@ async fn main() {
                 args.push("-json".to_string());
             }
             args.push("-no-color".to_string());
+            interrupt::install();
             plan_json::run_plan_pretty(
                 &require_tofu(tofu_binary),
                 args,
@@ -360,12 +362,14 @@ async fn main() {
             auto_nix_generate(&terranix_binary);
             // All apply forms go through the saved-plan gate. In particular,
             // `--json` and `--detail` must not become policy bypasses.
+            interrupt::install();
             plan_json::run_apply_pretty(&require_tofu(tofu_binary), cmd).await
         }
         cli::SubCommand::Destroy(ref cmd) => {
             auto_nix_generate(&terranix_binary);
             // Destroy is an apply of a destructive plan, so it receives the
             // same plan-policy gate rather than delegating straight to tofu.
+            interrupt::install();
             plan_json::run_destroy_pretty(&require_tofu(tofu_binary), cmd).await
         }
 
@@ -552,11 +556,14 @@ fn require_tofu(tofu_binary: Option<TofuBinary>) -> TofuBinary {
 fn run_tofu(tofu_binary: Option<TofuBinary>, args: Vec<String>) -> ! {
     let tofu = require_tofu(tofu_binary);
 
+    interrupt::install();
+    interrupt::tofu_started();
     let status = tofu.run(&args.iter().map(|s| s.as_str()).collect::<Vec<&str>>())
         .unwrap_or_else(|e| {
             eprintln!("{} Failed to execute tofu: {e}", "error:".bold().red());
             std::process::exit(1);
         });
+    interrupt::settle();
 
     std::process::exit(status.code().unwrap_or(1));
 }

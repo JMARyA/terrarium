@@ -203,6 +203,26 @@ impl TerrariumClient {
         }
     }
 
+    /// Release `lock` only if it is still the one held — the server refuses
+    /// with 409 when the workspace has since been locked under another ID.
+    pub async fn release_lock(&self, name: &str, lock: &LockInfo) -> Result<(), String> {
+        let resp = self
+            .client
+            .delete(format!("{}/lock/{name}", self.base_url))
+            .basic_auth(&self.username, Some(&self.password))
+            .json(lock)
+            .send()
+            .await
+            .map_err(|e| e.to_string())?;
+
+        match resp.status() {
+            s if s.is_success() => Ok(()),
+            reqwest::StatusCode::NOT_FOUND => Ok(()), // already released
+            reqwest::StatusCode::CONFLICT => Err(format!("'{name}' is now locked by someone else")),
+            s => Err(format!("Server returned {s}")),
+        }
+    }
+
     pub async fn list_locks(&self) -> Result<HashMap<String, LockInfo>, String> {
         let resp = self
             .client

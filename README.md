@@ -45,6 +45,8 @@ terra state list
 
 OpenTofu must be installed and available in `$PATH`.
 
+**Ctrl+C** is safe: the first press lets `tofu` stop gracefully and release the state lock while `terra` waits for it; a second press stops immediately. If `tofu` exits still holding a lock, `terra` releases it — only a lock taken by this machine and user during this run, and only by its lock ID. A third press aborts `terra` itself. Temporary plan files are always removed.
+
 ---
 
 ## Deployment

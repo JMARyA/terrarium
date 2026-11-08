@@ -34,6 +34,7 @@ pub async fn run_plan_pretty(
     });
 
     if let Some(ref path) = temp_out {
+        crate::interrupt::track_temp(path.clone());
         args.push("-out".to_string());
         args.push(path.to_string_lossy().to_string());
     }
@@ -126,6 +127,7 @@ pub async fn run_apply_pretty(tofu: &TofuBinary, cmd: &crate::cli::ApplyCommand)
         .as_nanos();
     let plan_file = std::env::temp_dir().join(format!("terra-plan-{ts}.tfplan"));
     let plan_file_str = plan_file.to_string_lossy().to_string();
+    crate::interrupt::track_temp(plan_file.clone());
 
     let plan_args = build_plan_args_from_apply(cmd, &plan_file_str);
     let plan_refs: Vec<&str> = plan_args.iter().map(|s| s.as_str()).collect();
@@ -208,6 +210,7 @@ fn plan_stream_inner(
         eprintln!("{} {e}", "error:".bold().red());
         std::process::exit(1);
     });
+    crate::interrupt::tofu_started();
 
     let stdout = child.stdout.take().unwrap();
     let reader = std::io::BufReader::new(stdout);
@@ -277,6 +280,7 @@ fn plan_stream_inner(
 
     clear_status(tty, &mut status_len);
     let status = child.wait().unwrap_or_else(|_| std::process::exit(1));
+    crate::interrupt::settle();
 
     if !json_output && !drifted.is_empty() {
         eprintln!("{}", "Note: Objects have changed outside of OpenTofu".yellow().bold());
@@ -314,6 +318,7 @@ fn apply_stream(tofu: &TofuBinary, args: &[&str]) -> std::process::ExitStatus {
         eprintln!("{} {e}", "error:".bold().red());
         std::process::exit(1);
     });
+    crate::interrupt::tofu_started();
 
     let stdout = child.stdout.take().unwrap();
     let reader = std::io::BufReader::new(stdout);
@@ -371,6 +376,7 @@ fn apply_stream(tofu: &TofuBinary, args: &[&str]) -> std::process::ExitStatus {
 
     clear_status(tty, &mut status_len);
     let status = child.wait().unwrap_or_else(|_| std::process::exit(1));
+    crate::interrupt::settle();
 
     println!();
     if let Some((add, change, remove)) = summary {
